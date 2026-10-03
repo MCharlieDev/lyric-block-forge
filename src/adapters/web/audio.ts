@@ -109,8 +109,21 @@ export function createWebAudioPort(): AudioPort {
   }
 
   const ensureContext = (): AudioContext => {
-    if (context === null) {
-      context = new AudioContext()
+    // context 一旦进入 closed / interrupted，decodeAudioData 会直接 reject，
+    // 必须重建才能恢复；suspended 是 autoplay 的正常态，可在其上正常解码，不重建。
+    // Safari 的私有态 interrupted 不在 TS 的 AudioContextState 联合类型内，故用 string 比较。
+    const rawState = context === null ? null : (context.state as string)
+    if (context === null || rawState === 'closed' || rawState === 'interrupted') {
+      const created = new AudioContext()
+      context = created
+      // 会话级异常（context 死亡）是波形空白的可疑触发源，这里留下观测点。
+      // warn 仅在真正不可用态触发，suspended 不 warn；旧的 created 被替换后监听器随其 GC。
+      created.addEventListener('statechange', () => {
+        const next = created.state as string
+        if (next === 'closed' || next === 'interrupted') {
+          console.warn('[audio] AudioContext 状态异常:', next)
+        }
+      })
       gain = context.createGain()
       gain.gain.value = volume
       gain.connect(context.destination)
@@ -156,16 +169,22 @@ export function createWebAudioPort(): AudioPort {
     async load(asset: AudioAsset): Promise<void> {
       setState('loading')
       releaseSource()
-      resetPeaks()
-      buffer = null
       positionMs = 0
 
+      // 原子切换：先解码到临时变量，成功后才替换共享 buffer / pyramid。
+      // 这样解码失败时端口保持 load 前状态，维持
+      // "store 有 asset ⇒ 端口有 buffer" 的不变量（App 侧失败不会 attachAudio）。
+      let decoded: AudioBuffer
       try {
         const response = await fetch(asset.source.uri)
         const arrayBuffer = await response.arrayBuffer()
         const ctx = ensureContext()
-        buffer = await ctx.decodeAudioData(arrayBuffer)
+        decoded = await ctx.decodeAudioData(arrayBuffer)
       } catch (error) {
+        console.error('[audio] 解码失败', {
+          message: error instanceof Error ? error.message : String(error),
+          contextState: context?.state ?? null,
+        })
         setState('error')
         throw error instanceof Error ? error : new Error('音频解码失败')
       } finally {
@@ -173,6 +192,8 @@ export function createWebAudioPort(): AudioPort {
         if (asset.source.kind === 'object-url') URL.revokeObjectURL(asset.source.uri)
       }
 
+      resetPeaks()
+      buffer = decoded
       positionMs = 0
       setState('ready')
       emitTick()
