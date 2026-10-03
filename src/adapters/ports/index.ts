@@ -1,0 +1,11 @@
+/** 平台端口（Port）出口。所有端口均为接口，实现在各外壳层。 */
+export * from './common'
+export * from './file'
+export * from './audio'
+export * from './storage'
+export * from './clipboard'
+export * from './share'
+export * from './notification'
+export * from './haptics'
+export * from './waveform-cache'
+export * from './audio-analysis'
