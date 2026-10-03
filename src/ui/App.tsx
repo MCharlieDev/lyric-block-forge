@@ -16,7 +16,7 @@ import { SettingsMenu } from './components/SettingsMenu'
 import { TextImportDialog } from './components/TextImportDialog'
 import { ToastHost } from './components/ToastHost'
 import { buildExportText, selectVisibleLines, useEditorStore } from './stores/editorStore'
-import { SETTINGS_STORAGE_KEY, toBilingualOptions, useSettingsStore } from './stores/settingsStore'
+import { SETTINGS_STORAGE_KEY, toBilingualOptions, toMetadataPrefixOptions, useSettingsStore } from './stores/settingsStore'
 
 /** LRC 文件的导入 / 导出过滤器。 */
 const LRC_FILTER = { name: 'LRC 歌词', extensions: ['lrc', 'txt'] }
@@ -120,7 +120,7 @@ export function App() {
     const result = parseLrc(text, {
       encoding,
       bilingual: toBilingualOptions(settings),
-      metadataPrefix: { enabled: settings.metadataPrefixEnabled },
+      metadataPrefix: toMetadataPrefixOptions(settings),
     })
     if (result.document === null || result.document.lines.length === 0) {
       setErrorText(`无法解析 ${sourceName}：未识别到任何歌词行`)

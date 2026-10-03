@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { BilingualLanguage, BilingualMergeOptions } from '@core'
+import type { BilingualLanguage, BilingualMergeOptions, ParseOptions } from '@core'
 
 /** 设置持久化所用的存储键（StoragePort）。 */
 export const SETTINGS_STORAGE_KEY = 'lrc-editor/settings'
@@ -49,13 +49,17 @@ export interface AppSettings {
   /** 合并容差（毫秒），`0` 表示时间戳严格相等 */
   mergeToleranceMs: number
   /**
-   * 是否识别歌词前的介绍行（如「作词：张三」），转为文档元数据。
+   * 元数据前缀识别的三态模式：`off` / `meta` / `meta+line`。
    *
-   * 默认关闭：既有关闭语义与 core 的 `metadataPrefix.enabled` 默认 false 对齐，
-   * 用户未动开关时导入行为与内核轮完全一致。注意本项与 `applyRecognizers`
+   * - `off`：不识别，导入行为与未开启时完全一致（默认）。
+   * - `meta`：把歌词前的介绍行（如「作词：张三」）转为文档元数据，该行不进歌词列表。
+   * - `meta+line`：除转元数据外，额外保留一条 `[00:00.000]` 普通歌词行，
+   *   兜底给不认元数据标签的播放器显示。
+   *
+   * 到内核选项的映射见 `toMetadataPrefixOptions`。注意本项与 `applyRecognizers`
    * 是两个独立默认，组合起来才是用户实际看到的默认行为。
    */
-  metadataPrefixEnabled: boolean
+  metadataPrefixMode: 'off' | 'meta' | 'meta+line'
   /**
    * 行操作弹窗是否支持"点击遮罩关闭"。
    *
@@ -113,7 +117,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bilingualSeparator: '',
   primaryLanguage: 'auto',
   mergeToleranceMs: 0,
-  metadataPrefixEnabled: false,
+  metadataPrefixMode: 'off',
   closeDialogOnBackdropClick: false,
   timestampPrecisionMs: 1,
   confirmMajorChange: true,
@@ -155,10 +159,14 @@ function normalizeSettings(stored: unknown): AppSettings {
       typeof tolerance === 'number' && Number.isFinite(tolerance) && tolerance >= 0
         ? Math.round(tolerance)
         : DEFAULT_SETTINGS.mergeToleranceMs,
-    metadataPrefixEnabled:
-      typeof record.metadataPrefixEnabled === 'boolean'
-        ? record.metadataPrefixEnabled
-        : DEFAULT_SETTINGS.metadataPrefixEnabled,
+    metadataPrefixMode:
+      record.metadataPrefixMode === 'off' ||
+      record.metadataPrefixMode === 'meta' ||
+      record.metadataPrefixMode === 'meta+line'
+        ? record.metadataPrefixMode
+        : record.metadataPrefixEnabled === true
+          ? 'meta'
+          : 'off',
     // 本函数是白名单：新增设置项必须在这里补一条，否则刷新后会被静默丢回默认值
     closeDialogOnBackdropClick:
       typeof record.closeDialogOnBackdropClick === 'boolean'
@@ -202,6 +210,25 @@ export function toBilingualOptions(settings: AppSettings): BilingualMergeOptions
     separator: settings.bilingualSeparator === '' ? null : settings.bilingualSeparator,
     primaryLanguage: settings.primaryLanguage,
     toleranceMs: settings.mergeToleranceMs,
+  }
+}
+
+/**
+ * 把设置的三态模式转换为 core 的元数据前缀选项。
+ *
+ * @param settings 用户预设
+ * @returns 传给 `parseLrc` 的 `metadataPrefix` 选项
+ */
+export function toMetadataPrefixOptions(
+  settings: AppSettings,
+): NonNullable<ParseOptions['metadataPrefix']> {
+  switch (settings.metadataPrefixMode) {
+    case 'meta':
+      return { enabled: true, keepLyricLine: false }
+    case 'meta+line':
+      return { enabled: true, keepLyricLine: true }
+    default:
+      return { enabled: false, keepLyricLine: false }
   }
 }
 

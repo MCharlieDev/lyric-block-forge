@@ -126,18 +126,26 @@ const SECTIONS: SettingsSection[] = [
         ),
       },
       {
-        id: 'metadataPrefixEnabled',
+        id: 'metadataPrefixMode',
         label: '识别歌词前的介绍行（如「作词：张三」）',
-        keywords: '元数据 前缀 作词 作曲 介绍行 识别',
+        keywords: '元数据 前缀 作词 作曲 介绍行 识别 保留',
         control: ({ settings, update }) => (
-          <label className={checkboxRowClass}>
-            <input
-              type="checkbox"
-              checked={settings.metadataPrefixEnabled}
-              onChange={(event) => update({ metadataPrefixEnabled: event.target.checked })}
-              className="accent-accent"
-            />
+          <label className={labelClass}>
             识别歌词前的介绍行（如「作词：张三」）
+            <select
+              value={settings.metadataPrefixMode}
+              onChange={(event) => {
+                const value = event.target.value
+                update({
+                  metadataPrefixMode: value === 'meta' || value === 'meta+line' ? value : 'off',
+                })
+              }}
+              className={fieldClass}
+            >
+              <option value="off">关</option>
+              <option value="meta">仅元数据</option>
+              <option value="meta+line">元数据 + 保留歌词行</option>
+            </select>
           </label>
         ),
       },

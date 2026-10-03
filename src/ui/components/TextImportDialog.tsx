@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { parseLrc } from '@core'
-import { toBilingualOptions, useSettingsStore } from '../stores/settingsStore'
+import { toBilingualOptions, toMetadataPrefixOptions, useSettingsStore } from '../stores/settingsStore'
 
 /** 手动输入弹窗属性。 */
 export interface TextImportDialogProps {
@@ -39,7 +39,7 @@ export function TextImportDialog({ open, onClose, onConfirm }: TextImportDialogP
     if (text.trim() === '') return { lines: 0, timed: 0 }
     const result = parseLrc(text, {
       bilingual: toBilingualOptions(settings),
-      metadataPrefix: { enabled: settings.metadataPrefixEnabled },
+      metadataPrefix: toMetadataPrefixOptions(settings),
     })
     const lines = result.document?.lines ?? []
     return {
