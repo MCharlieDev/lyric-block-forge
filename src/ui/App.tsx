@@ -120,6 +120,7 @@ export function App() {
     const result = parseLrc(text, {
       encoding,
       bilingual: toBilingualOptions(settings),
+      metadataPrefix: { enabled: settings.metadataPrefixEnabled },
     })
     if (result.document === null || result.document.lines.length === 0) {
       setErrorText(`无法解析 ${sourceName}：未识别到任何歌词行`)

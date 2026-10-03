@@ -49,6 +49,14 @@ export interface AppSettings {
   /** 合并容差（毫秒），`0` 表示时间戳严格相等 */
   mergeToleranceMs: number
   /**
+   * 是否识别歌词前的介绍行（如「作词：张三」），转为文档元数据。
+   *
+   * 默认关闭：既有关闭语义与 core 的 `metadataPrefix.enabled` 默认 false 对齐，
+   * 用户未动开关时导入行为与内核轮完全一致。注意本项与 `applyRecognizers`
+   * 是两个独立默认，组合起来才是用户实际看到的默认行为。
+   */
+  metadataPrefixEnabled: boolean
+  /**
    * 行操作弹窗是否支持"点击遮罩关闭"。
    *
    * 默认关闭：误触遮罩会丢掉弹窗里正在编辑的内容，代价太高；
@@ -105,6 +113,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bilingualSeparator: '',
   primaryLanguage: 'auto',
   mergeToleranceMs: 0,
+  metadataPrefixEnabled: false,
   closeDialogOnBackdropClick: false,
   timestampPrecisionMs: 1,
   confirmMajorChange: true,
@@ -146,6 +155,10 @@ function normalizeSettings(stored: unknown): AppSettings {
       typeof tolerance === 'number' && Number.isFinite(tolerance) && tolerance >= 0
         ? Math.round(tolerance)
         : DEFAULT_SETTINGS.mergeToleranceMs,
+    metadataPrefixEnabled:
+      typeof record.metadataPrefixEnabled === 'boolean'
+        ? record.metadataPrefixEnabled
+        : DEFAULT_SETTINGS.metadataPrefixEnabled,
     // 本函数是白名单：新增设置项必须在这里补一条，否则刷新后会被静默丢回默认值
     closeDialogOnBackdropClick:
       typeof record.closeDialogOnBackdropClick === 'boolean'

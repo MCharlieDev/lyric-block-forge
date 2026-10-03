@@ -125,6 +125,22 @@ const SECTIONS: SettingsSection[] = [
           </label>
         ),
       },
+      {
+        id: 'metadataPrefixEnabled',
+        label: '识别歌词前的介绍行（如「作词：张三」）',
+        keywords: '元数据 前缀 作词 作曲 介绍行 识别',
+        control: ({ settings, update }) => (
+          <label className={checkboxRowClass}>
+            <input
+              type="checkbox"
+              checked={settings.metadataPrefixEnabled}
+              onChange={(event) => update({ metadataPrefixEnabled: event.target.checked })}
+              className="accent-accent"
+            />
+            识别歌词前的介绍行（如「作词：张三」）
+          </label>
+        ),
+      },
     ],
   },
   {

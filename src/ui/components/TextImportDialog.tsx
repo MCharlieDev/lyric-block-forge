@@ -37,7 +37,10 @@ export function TextImportDialog({ open, onClose, onConfirm }: TextImportDialogP
 
   const preview = useMemo(() => {
     if (text.trim() === '') return { lines: 0, timed: 0 }
-    const result = parseLrc(text, { bilingual: toBilingualOptions(settings) })
+    const result = parseLrc(text, {
+      bilingual: toBilingualOptions(settings),
+      metadataPrefix: { enabled: settings.metadataPrefixEnabled },
+    })
     const lines = result.document?.lines ?? []
     return {
       lines: lines.length,

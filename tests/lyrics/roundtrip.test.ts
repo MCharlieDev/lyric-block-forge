@@ -362,4 +362,11 @@ describe('元数据前缀识别', () => {
     expect(doc.meta.lyricist).toBeUndefined()
     expect(doc.lines.filter((line) => line.text === '作词：张三')).toHaveLength(1)
   })
+
+  test('l. 总闸门关（applyRecognizers:false）+ 前缀识别开 → 不识别', () => {
+    const src = '作词：张三\n[00:01.00]x\n'
+    const doc = parseOk(src, { applyRecognizers: false, metadataPrefix: { enabled: true } })
+    expect(doc.meta.lyricist).toBeUndefined()
+    expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三', 'x'])
+  })
 })
