@@ -5,6 +5,9 @@ import {
   FOLLOW_TRIGGER_RATIO,
   OVERSCAN_RATIO,
   REWINDOW_RATIO,
+  WHEEL_LERP,
+  WHEEL_REFERENCE_FRAME_MS,
+  WHEEL_SETTLE_THRESHOLD_PX,
 } from './constants'
 import { clampPixelsPerMs, fitPixelsPerMs, timeToX, xToTime, type TimeView } from './timeMap'
 
@@ -99,6 +102,18 @@ export interface TimelineViewportKernel {
 
   /** 在时间轴上平移：正数表示视口向未来方向移动。 */
   panByPixels(dxPx: number): void
+  /**
+   * 滚轮平移：只累积"目标位移"，由内核按 dt 做阻尼插值平滑跟随。
+   *
+   * @param deltaPx 本次滚轮的位移（像素），正数表示视口向未来方向移动
+   */
+  panByWheel(deltaPx: number): void
+  /** 注册滚轮收敛回调（视口停下时触发一次）；传 `null` 清除。 */
+  setWheelSettleHandler(handler: (() => void) | null): void
+  /** 以给定的像素/秒速度持续自动平移（滚动条边缘自动滚），速度 0 即停止。 */
+  startAutoPan(velocityPxPerSecond: number): void
+  /** 停止边缘自动平移（幂等）。 */
+  stopAutoPan(): void
   /** 以视口内某个横坐标为锚点缩放。 */
   zoomAt(anchorXPx: number, factor: number): void
   /** 缩放到完整显示全部内容。 */
@@ -164,6 +179,32 @@ export function createTimelineViewportKernel(): TimelineViewportKernel {
 
   /** 进行中的跟随动画；非空时 `followPlayhead` 直接返回，避免重复翻页。 */
   let animation: FollowAnimation | null = null
+
+  /* ------------------------------------------------------------------ *
+   * 滚轮阻尼插值 / 边缘自动平移
+   * ------------------------------------------------------------------ */
+
+  /** 滚轮累积的目标视口起点（末尾会被夹进合法范围）。 */
+  let wheelTargetStartMs = 0
+  /** 滚轮当前插值到的视口起点。 */
+  let wheelCurrentStartMs = 0
+  /** 滚轮插值循环的 rAF 句柄；非空表示循环在跑。 */
+  let wheelHandle: number | null = null
+  /** 滚轮收敛（视口停下）时触发一次的回调。 */
+  let wheelSettleHandler: (() => void) | null = null
+  /**
+   * 滚轮平移期间屏蔽跟随（内核自持，独立于 `followSuspended`）。
+   *
+   * 不能复用全局 `followSuspended`：滚轮若在收敛前被 `panByPixels`
+   * （ctrl+滚轮缩放 / 点滚动条轨道）打断，全局挂起会永久卡死、
+   * 让跟随彻底失效。这里与滚轮循环同生共死（起于首帧、止于收敛或取消）。
+   */
+  let wheelSuspendsFollow = false
+
+  /** 边缘自动平移的当前速度（像素/秒），0 表示不移动。 */
+  let autoPanVelocity = 0
+  /** 边缘自动平移循环的 rAF 句柄；非空表示循环在跑。 */
+  let autoPanHandle: number | null = null
 
   // 帧状态复用同一个对象，避免 60fps 下持续分配
   const frame: TimelineFrame = { view: { startMs: 0, pixelsPerMs: INITIAL_PIXELS_PER_MS }, window: window_ }
@@ -301,6 +342,89 @@ export function createTimelineViewportKernel(): TimelineViewportKernel {
     anim.handle = window.requestAnimationFrame(step)
   }
 
+  /** 停止滚轮插值循环（幂等，不触发收敛回调）。滚轮屏蔽跟随随之解除。 */
+  const stopWheelLerp = (): void => {
+    wheelSuspendsFollow = false
+    if (wheelHandle === null) return
+    window.cancelAnimationFrame(wheelHandle)
+    wheelHandle = null
+  }
+
+  /**
+   * 启动滚轮插值循环。
+   *
+   * 与跟随动画一样用**独立 rAF**（`scheduleFrame` 是一次性去重帧，不能当循环用），
+   * 每帧按 dt 做帧率无关的 lerp 并 `applyView`，因此 120/144Hz 与 60Hz 手感一致。
+   */
+  const startWheelLerp = (): void => {
+    let lastTs = performance.now()
+    const step = (now: number): void => {
+      if (wheelHandle === null) return
+      const dt = now - lastTs
+      lastTs = now
+      const ppms = pixelsPerMs
+      // 帧率无关：把每帧收敛比例换算成与 dt 对应的等效比例
+      // dt 下界防呆：rAF 时间戳可能早于手势内取的 performance.now()，
+      // 负数指数会让 alpha < 0 使视口反向移动一帧（thumb 反向抽搐）。
+      const safeDt = Math.max(0, dt)
+      const alpha = 1 - Math.pow(1 - WHEEL_LERP, safeDt / WHEEL_REFERENCE_FRAME_MS)
+      wheelCurrentStartMs += (wheelTargetStartMs - wheelCurrentStartMs) * alpha
+      // 残差换算成像素小于阈值即视为收敛：对齐精确目标、停循环、回调一次
+      if (Math.abs(wheelTargetStartMs - wheelCurrentStartMs) * ppms < WHEEL_SETTLE_THRESHOLD_PX) {
+        wheelCurrentStartMs = wheelTargetStartMs
+        applyView(wheelCurrentStartMs, ppms)
+        stopWheelLerp()
+        const handler = wheelSettleHandler
+        if (handler !== null) handler()
+        return
+      }
+      applyView(wheelCurrentStartMs, ppms)
+      wheelHandle = window.requestAnimationFrame(step)
+    }
+    wheelHandle = window.requestAnimationFrame(step)
+  }
+
+  /** 停止边缘自动平移（幂等，清速度）。 */
+  const stopAutoPan = (): void => {
+    autoPanVelocity = 0
+    if (autoPanHandle === null) return
+    window.cancelAnimationFrame(autoPanHandle)
+    autoPanHandle = null
+  }
+
+  /**
+   * 启动 / 更新边缘自动平移循环。
+   *
+   * 速度与分帧无关：每帧按 `velocity(像素/秒) × dt(秒)` 积分位移，
+   * 到内容边界（位置被夹住不再变化）或速度归零即停。
+   */
+  const startAutoPanLoop = (velocityPxPerSecond: number): void => {
+    if (velocityPxPerSecond === 0) {
+      stopAutoPan()
+      return
+    }
+    autoPanVelocity = velocityPxPerSecond
+    // 已在跑：只更新速度，不重启循环，避免逐次 pointermove 造成抖动
+    if (autoPanHandle !== null) return
+    let lastTs = performance.now()
+    const step = (now: number): void => {
+      if (autoPanHandle === null) return
+      const dt = now - lastTs
+      lastTs = now
+      const ppms = pixelsPerMs
+      const before = viewStartMs
+      // dt 下界防呆（同 startWheelLerp）：防止负 dt 造成方向反转
+      applyView(viewStartMs + (autoPanVelocity * Math.max(0, dt)) / 1000 / ppms, ppms)
+      // 位置没变 = 已顶到内容边界（被 clamp 住），停止
+      if (viewStartMs === before) {
+        stopAutoPan()
+        return
+      }
+      autoPanHandle = window.requestAnimationFrame(step)
+    }
+    autoPanHandle = window.requestAnimationFrame(step)
+  }
+
   const maybeFit = (): void => {
     if (!needsFit || viewportWidthPx <= 0 || durationMs <= 0) return
     needsFit = false
@@ -337,6 +461,9 @@ export function createTimelineViewportKernel(): TimelineViewportKernel {
       const value = Math.max(0, next)
       if (value === durationMs) return
       durationMs = value
+      // 时长变了：进行中的滚轮插值 / 边缘自动滚目标可能已越界，直接取消
+      stopWheelLerp()
+      stopAutoPan()
       // 换了音频就重新铺满，随后用户自己缩放
       needsFit = true
       minPixelsPerMs = viewportWidthPx > 0 && durationMs > 0 ? fitPixelsPerMs(durationMs, viewportWidthPx) : minPixelsPerMs
@@ -361,13 +488,46 @@ export function createTimelineViewportKernel(): TimelineViewportKernel {
     invalidate: scheduleFrame,
 
     panByPixels(dxPx) {
-      // 手势打断：动画立即停在当前位置
+      // 手势打断：跟随动画 / 滚轮插值 / 边缘自动滚一律立即停在当前位置
       stopFollowAnimation()
+      stopWheelLerp()
+      stopAutoPan()
       applyView(viewStartMs + dxPx / pixelsPerMs, pixelsPerMs)
     },
 
+    panByWheel(deltaPx) {
+      // 滚轮自带阻尼，与边缘自动滚互斥（单点写死，别两处各写）
+      stopAutoPan()
+      if (wheelHandle === null) {
+        // 手势首帧：打断跟随动画，从当前视口就地起步
+        stopFollowAnimation()
+        // 滚轮全程屏蔽跟随（收敛或取消时于 stopWheelLerp 解除）
+        wheelSuspendsFollow = true
+        wheelTargetStartMs = viewStartMs
+        wheelCurrentStartMs = viewStartMs
+        startWheelLerp()
+      }
+      // 累积目标位移（夹进合法范围，滚到两端自然停住）
+      wheelTargetStartMs = clampStartMs(wheelTargetStartMs + deltaPx / pixelsPerMs)
+    },
+
+    setWheelSettleHandler(handler) {
+      wheelSettleHandler = handler
+    },
+
+    startAutoPan(velocityPxPerSecond) {
+      // 边缘自动滚独占平移：停跟随动画与滚轮插值
+      stopFollowAnimation()
+      stopWheelLerp()
+      startAutoPanLoop(velocityPxPerSecond)
+    },
+
+    stopAutoPan,
+
     zoomAt(anchorXPx, factor) {
       stopFollowAnimation()
+      stopWheelLerp()
+      stopAutoPan()
       const anchorTimeMs = xToTime(anchorXPx, { startMs: viewStartMs, pixelsPerMs })
       const nextPixelsPerMs = clampPixelsPerMs(pixelsPerMs * factor, minPixelsPerMs)
       if (nextPixelsPerMs === pixelsPerMs) return
@@ -376,6 +536,8 @@ export function createTimelineViewportKernel(): TimelineViewportKernel {
 
     zoomToFit() {
       stopFollowAnimation()
+      stopWheelLerp()
+      stopAutoPan()
       needsFit = false
       if (viewportWidthPx <= 0 || durationMs <= 0) return
       applyView(0, fitPixelsPerMs(durationMs, viewportWidthPx))
@@ -383,8 +545,8 @@ export function createTimelineViewportKernel(): TimelineViewportKernel {
 
     followPlayhead(timeMs) {
       if (viewportWidthPx <= 0) return
-      // 跟随暂停 / 拖块挂起 / 动画进行中，一律不推动视口
-      if (followPaused || followSuspended || animation !== null) return
+      // 跟随暂停 / 拖块挂起 / 滚轮屏蔽 / 动画或边缘自动滚进行中，一律不推动视口
+      if (followPaused || followSuspended || wheelSuspendsFollow || animation !== null || autoPanHandle !== null) return
       const x = timeToX(timeMs, { startMs: viewStartMs, pixelsPerMs })
       // 视口左侧安全区内，无需跟随
       if (x >= 0 && x <= viewportWidthPx * FOLLOW_TRIGGER_RATIO) return
@@ -446,6 +608,8 @@ export function createTimelineViewportKernel(): TimelineViewportKernel {
 
     destroy() {
       stopFollowAnimation()
+      stopWheelLerp()
+      stopAutoPan()
       resizeObserver?.disconnect()
       resizeObserver = null
       viewportEl = null

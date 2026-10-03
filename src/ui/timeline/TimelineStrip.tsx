@@ -3,6 +3,7 @@ import { getReplayedLineTimes, getReplayedWordTime } from '@core'
 import { useAdapters } from '../context/AdapterContext'
 import { useEditorStore } from '../stores/editorStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { showToast } from '../stores/toastStore'
 import { pauseAudioOnGesture } from '../utils/editorCommands'
 import { AnalysisTrack } from './AnalysisTrack'
 import { HorizontalScrollbar } from './Scrollbar'
@@ -11,6 +12,7 @@ import { PlayheadLayer } from './PlayheadLayer'
 import { PlayheadOffscreenHint } from './PlayheadOffscreenHint'
 import { TimeRuler } from './TimeRuler'
 import { WaveformLayer } from './WaveformLayer'
+import { WHEEL_MULTIPLIER } from './constants'
 import { useTimelineViewportKernel, useViewportRef } from './useTimelineViewport'
 import { TimelineViewportContext } from './viewportContext'
 
@@ -90,15 +92,39 @@ export function TimelineStrip() {
       }
       // 其余滚轮一律横向平移：Shift + 滚轮时浏览器会把纵向滚转成 deltaX，
       // 普通滚轮的纵向分量也直接当作平移，保证"滚轮永远是横向移动"。
-      // 平移手势起始：按设置真暂停音频；B 模式下手动平移即进入暂停跟随态。
       const settings = useSettingsStore.getState().settings
+      const playing = useEditorStore.getState().playback.isPlaying
+      // A 模式（snap）+ 播放中 + 未开"平移暂停音频"：滚完会被 snap 拉回播放头，
+      // 等于撤销用户刚做的滚动，此时直接禁止平移并提示（不 pan、不 suspend）。
+      if (settings.followResumeMode === 'snap' && !settings.pauseAudioOnPan && playing) {
+        showToast('跟随播放中，无法手动平移视口。可暂停音频，或改用「不拉回」模式。')
+        return
+      }
+      // 平移手势起始：按设置真暂停音频；B 模式下手动平移即进入暂停跟随态；
+      // 滚轮期间屏蔽跟随由内核自持（panByWheel 首帧起、收敛/取消止），
+      // 不再走全局 suspendFollow —— 否则 ctrl+滚轮缩放打断收敛会让挂起永久卡死。
       pauseAudioOnGesture(adapters, settings.pauseAudioOnPan)
       if (settings.followResumeMode === 'pause') kernel.setFollowPaused(true)
-      kernel.panByPixels(event.deltaX !== 0 ? event.deltaX : event.deltaY)
+      kernel.panByWheel((event.deltaX !== 0 ? event.deltaX : event.deltaY) * WHEEL_MULTIPLIER)
     }
 
     element.addEventListener('wheel', handleWheel, { passive: false })
     return () => element.removeEventListener('wheel', handleWheel)
+  }, [adapters, kernel])
+
+  // 滚轮收敛（视口停下）后按口径恢复跟随：handler 内一律 getState()，不闭包捕获。
+  useEffect(() => {
+    kernel.setWheelSettleHandler(() => {
+      const settings = useSettingsStore.getState().settings
+      const playing = useEditorStore.getState().playback.isPlaying
+      // 仅当手势结束时仍在播放才拉回；否则只解除挂起（视口留在原地）
+      if (settings.followResumeMode === 'snap' && playing) {
+        kernel.resumeFollow('snap', adapters.audio.getCurrentTimeMs())
+      } else {
+        kernel.clearFollowSuspension()
+      }
+    })
+    return () => kernel.setWheelSettleHandler(null)
   }, [adapters, kernel])
 
   // 播放进度：音频时钟是唯一基准，这里只负责让内核重绘，播放中顺带推动视口

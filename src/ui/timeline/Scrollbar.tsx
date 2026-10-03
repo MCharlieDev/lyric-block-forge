@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { useAdapters } from '../context/AdapterContext'
+import { useEditorStore } from '../stores/editorStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { pauseAudioOnGesture } from '../utils/editorCommands'
-import { SCROLLBAR_MIN_THUMB_PX, SCROLLBAR_SIZE_PX } from './constants'
+import {
+  EDGE_PAN_MAX_SPEED_PX_PER_S,
+  EDGE_ZONE_PX,
+  SCROLLBAR_MIN_THUMB_PX,
+  SCROLLBAR_SIZE_PX,
+} from './constants'
 import { useTimelineFrame, useTimelineSnapshot, type TimelineFrame } from './useTimelineViewport'
 import { useTimelineViewportContext } from './viewportContext'
 
@@ -41,7 +47,15 @@ export function HorizontalScrollbar() {
   const trackRef = useRef<HTMLDivElement | null>(null)
   const thumbRef = useRef<HTMLDivElement | null>(null)
   const trackWidthRef = useRef(0)
-  const dragRef = useRef<{ pointerId: number; startX: number; startScroll: number } | null>(null)
+  const dragRef = useRef<{
+    pointerId: number
+    startX: number
+    startScroll: number
+    /** 本次拖拽是否发生过位移（用于松手时区分"点一下"与"真拖动"）。 */
+    moved: boolean
+    /** 指针是否处于轨道边缘区（进入即冻结位移映射，改由自动滚驱动）。 */
+    inEdgeZone: boolean
+  } | null>(null)
 
   useEffect(() => {
     const track = trackRef.current
@@ -87,10 +101,15 @@ export function HorizontalScrollbar() {
   const handleThumbDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
     event.stopPropagation()
     beginPanGesture()
+    // 挂起跟随（只放这里，不能放 beginPanGesture：点轨共用它且无 pointerup 收尾，
+    // 挂起会永久卡死）
+    kernel.suspendFollow()
     dragRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
       startScroll: kernel.getFrame().view.startMs * kernel.getFrame().view.pixelsPerMs,
+      moved: false,
+      inEdgeZone: false,
     }
     event.currentTarget.setPointerCapture(event.pointerId)
   }
@@ -100,13 +119,52 @@ export function HorizontalScrollbar() {
     if (drag === null || drag.pointerId !== event.pointerId) return
     const factor = ratio()
     if (factor <= 0) return
+    const track = trackRef.current
+    if (track === null) return
+    const rect = track.getBoundingClientRect()
+    const leftZone = event.clientX < rect.left + EDGE_ZONE_PX
+    const rightZone = event.clientX > rect.right - EDGE_ZONE_PX
+
+    if (leftZone || rightZone) {
+      // 进入边缘区：冻结位移映射，改由内核按"超出边缘的距离"比例驱动自动滚
+      drag.inEdgeZone = true
+      const overshoot = leftZone
+        ? rect.left + EDGE_ZONE_PX - event.clientX
+        : event.clientX - (rect.right - EDGE_ZONE_PX)
+      const t = Math.min(1, Math.max(0, overshoot / EDGE_ZONE_PX))
+      const velocity = t * EDGE_PAN_MAX_SPEED_PX_PER_S
+      kernel.startAutoPan(leftZone ? -velocity : velocity)
+      drag.moved = true
+      return
+    }
+
+    if (drag.inEdgeZone) {
+      // 离开边缘区：停自动滚，并以"当前位置"重设基线，避免映射回跳
+      drag.inEdgeZone = false
+      kernel.stopAutoPan()
+      drag.startX = event.clientX
+      drag.startScroll = kernel.getFrame().view.startMs * kernel.getFrame().view.pixelsPerMs
+    }
+
     const target = drag.startScroll + (event.clientX - drag.startX) / factor
     const current = kernel.getFrame().view.startMs * kernel.getFrame().view.pixelsPerMs
     kernel.panByPixels(target - current)
+    drag.moved = true
   }
 
   const handleThumbUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (dragRef.current?.pointerId !== event.pointerId) return
+    const drag = dragRef.current
+    if (drag === null || drag.pointerId !== event.pointerId) return
+    kernel.stopAutoPan()
+    const settings = useSettingsStore.getState().settings
+    const playing = useEditorStore.getState().playback.isPlaying
+    // 真拖动过才按口径恢复；点一下（无位移）只解除挂起。
+    // 且仅当手势结束时仍在播放才 snap 拉回，否则视口留在原地。
+    if (drag.moved && settings.followResumeMode === 'snap' && playing) {
+      kernel.resumeFollow('snap', adapters.audio.getCurrentTimeMs())
+    } else {
+      kernel.clearFollowSuspension()
+    }
     dragRef.current = null
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
