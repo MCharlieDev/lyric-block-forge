@@ -270,6 +270,9 @@ describe('元数据前缀识别', () => {
   /** 开启元数据前缀识别（默认关，须显式开启）。 */
   const PREFIX: ParseOptions = { metadataPrefix: { enabled: true } }
 
+  /** 第三态：识别前缀时额外保留一条普通歌词行。 */
+  const KEEP: ParseOptions = { metadataPrefix: { enabled: true, keepLyricLine: true } }
+
   test('a. 基本：作词行转元数据、不进 lines、导出含 [lyricist:张三]', () => {
     const src = '作词：张三\n[00:01.00]x\n'
     const doc = parseOk(src, PREFIX)
@@ -368,5 +371,58 @@ describe('元数据前缀识别', () => {
     const doc = parseOk(src, { applyRecognizers: false, metadataPrefix: { enabled: true } })
     expect(doc.meta.lyricist).toBeUndefined()
     expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三', 'x'])
+  })
+
+  test('m. 第三态：识别前缀同时保留一条 00:00.000 歌词行', () => {
+    const src = '作词：张三\n[00:01.00]x\n'
+    const doc = parseOk(src, KEEP)
+    expect(doc.meta.lyricist).toBe('张三')
+    expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三', 'x'])
+    expect(doc.lines[0].timestamps).toEqual([
+      { kind: 'line', timeMs: 0, precisionMs: 1, source: 'import' },
+    ])
+    expect(serializeLrc(doc)).toBe('[lyricist:张三]\n[00:00.000]作词：张三\n[00:01.00]x\n')
+  })
+
+  test('n. 向后兼容：不传 keepLyricLine 与传 false 均与现状逐字节一致', () => {
+    const src = '作词：张三\n[00:01.00]x\n'
+    const withPREFIX = parseOk(src, PREFIX)
+    const withFalse = parseOk(src, { metadataPrefix: { enabled: true, keepLyricLine: false } })
+    expect(withPREFIX.lines.map((line) => line.text)).toEqual(['x'])
+    expect(serializeLrc(withPREFIX)).toBe('[lyricist:张三]\n[00:01.00]x\n')
+    expect(withFalse.lines.map((line) => line.text)).toEqual(['x'])
+    expect(serializeLrc(withFalse)).toBe('[lyricist:张三]\n[00:01.00]x\n')
+  })
+
+  test('o. 导出往返幂等：带时间戳的保留行再导入不重复识别', () => {
+    const src = '作词：张三\n[00:01.00]x\n'
+    const out = serializeLrc(parseOk(src, KEEP))
+    const again = parseOk(out, KEEP)
+    expect(again.meta.lyricist).toBe('张三')
+    expect(again.lines.map((line) => line.text)).toEqual(['作词：张三', 'x'])
+    expect(serializeLrc(again)).toBe(out)
+  })
+
+  test('p. 条件 / 窗口不满足：保留行也不产生', () => {
+    // 带时间戳的行 → 不识别，也不注入 00:00.000
+    const docTs = parseOk('[00:01.00]作词：张三\n', KEEP)
+    expect(docTs.meta.lyricist).toBeUndefined()
+    expect(docTs.lines).toHaveLength(1)
+    expect(docTs.lines[0].timestamps.map((t) => t.timeMs)).toEqual([1000])
+
+    // 第 11 条内容行（窗口上限 10）→ 同样不产生保留行、不写元数据
+    const docLate = parseOk('a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n作词：张三\n[00:01.00]x\n', KEEP)
+    expect(docLate.meta.lyricist).toBeUndefined()
+    expect(docLate.lines.filter((line) => line.text === '作词：张三')).toHaveLength(1)
+    expect(docLate.lines.filter((line) => line.timestamps.some((t) => t.timeMs === 0))).toHaveLength(0)
+  })
+
+  test('q. enabled 缺省时 keepLyricLine 无意义：不写元数据、不注入 00:00.000', () => {
+    const src = '作词：张三\n[00:01.00]x\n'
+    const doc = parseOk(src, { metadataPrefix: { keepLyricLine: true } })
+    expect(doc.meta.lyricist).toBeUndefined()
+    expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三', 'x'])
+    expect(doc.lines[0].timestamps).toEqual([])
+    expect(serializeLrc(doc)).toBe(src)
   })
 })

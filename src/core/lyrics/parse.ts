@@ -24,8 +24,12 @@ export interface ParseOptions {
   /**
    * 元数据前缀识别预设：把歌词前的介绍行（如「作词：张三」）转为文档元数据。
    * 默认关闭——既有调用方都不传该字段，默认开启会让既有导入突然开始摘行。
+   *
+   * `keepLyricLine` 仅在 `enabled === true` 时被读取（否则无意义），默认 `false`
+   * 即保持现状：识别行只转元数据、不进歌词行。置 `true` 则额外保留一条普通歌词行
+   * （文本为原行，行级时间戳 `00:00.000`），兜底给不认元数据标签的播放器显示。
    */
-  metadataPrefix?: { enabled?: boolean }
+  metadataPrefix?: { enabled?: boolean; keepLyricLine?: boolean }
 }
 
 /**
@@ -355,6 +359,8 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
   const applyRecognizers = options.applyRecognizers ?? true
   /** 元数据前缀识别：总闸门开 且 该识别被显式开启（默认关）。 */
   const recognizeMetadataPrefix = applyRecognizers && options.metadataPrefix?.enabled === true
+  /** 第三态：识别前缀时是否额外保留一条普通歌词行（仅在识别开启时被读取）。 */
+  const keepLyricLine = options.metadataPrefix?.keepLyricLine === true
 
   for (const rawLine of parts) {
     if (rawLine.trim() === '') {
@@ -384,6 +390,9 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
 
     // 纯文本行：有时间的文件里视为未识别行，整篇无时间的文件里视为正文
     if (timeMatches.length === 0) {
+      // 普通行的行角色：供下方普通行与前缀保留行共用（同一概念单一来源）。
+      const role: LyricLineRole = sourceHasTimestamp ? 'unknown' : 'main'
+
       // 元数据前缀识别：窗口内、首条带时间戳的行之前；命中即转元数据，该行不进 lines。
       // 命中时同步 push 进 metadataTags（占源顺序位置），否则 pristine 判据 (b) 失败 →
       // 导出退回单行标准序，多行元数据布局会塌陷。
@@ -393,10 +402,14 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
           flushBlanksForMetaRow()
           metadataTags.push([{ name: matched.tag, value: matched.value }])
           applyMetaTag(matched.tag, matched.value)
+          if (keepLyricLine) {
+            // 第三态：除元数据标签外，额外保留一条普通歌词行（文本=原行，时间戳 00:00.000），
+            // 兜底给不认元数据标签的播放器显示。
+            placeLine(buildLine(rawLine.trim(), role, rawLine, [{ timeMs: 0, precisionMs: 1 }], []))
+          }
           continue
         }
       }
-      const role: LyricLineRole = sourceHasTimestamp ? 'unknown' : 'main'
       placeLine(buildLine(rawLine.trim(), role, rawLine, [], []))
       continue
     }
