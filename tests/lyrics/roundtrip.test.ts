@@ -265,3 +265,101 @@ describe('空行保真（additive 字段 blankLines）', () => {
     expect(serializeLrc(withoutB)).toBe('[00:01.00]a\n')
   })
 })
+
+describe('元数据前缀识别', () => {
+  /** 开启元数据前缀识别（默认关，须显式开启）。 */
+  const PREFIX: ParseOptions = { metadataPrefix: { enabled: true } }
+
+  test('a. 基本：作词行转元数据、不进 lines、导出含 [lyricist:张三]', () => {
+    const src = '作词：张三\n[00:01.00]x\n'
+    const doc = parseOk(src, PREFIX)
+    expect(doc.meta.lyricist).toBe('张三')
+    expect(doc.lines.map((line) => line.text)).toEqual(['x'])
+    expect(serializeLrc(doc)).toBe('[lyricist:张三]\n[00:01.00]x\n')
+  })
+
+  test('b. 四种分隔符：中文冒号 / 英文冒号 / 半角空格 / Tab', () => {
+    const cases: Array<[string, string]> = [
+      ['作词：张三\n[00:01.00]x\n', '张三'],
+      ['作词:李四\n[00:01.00]x\n', '李四'],
+      ['作词 王五\n[00:01.00]x\n', '王五'],
+      ['作词\t赵六\n[00:01.00]x\n', '赵六'],
+    ]
+    for (const [src, value] of cases) {
+      const doc = parseOk(src, PREFIX)
+      expect(doc.meta.lyricist).toBe(value)
+      expect(serializeLrc(doc)).toBe(`[lyricist:${value}]\n[00:01.00]x\n`)
+    }
+  })
+
+  test('c. 非标准前缀：制作人 → meta.custom + unknownTags；导出并往返', () => {
+    const src = '制作人：李四\n[00:01.00]x\n'
+    const doc = parseOk(src, PREFIX)
+    expect(doc.meta.custom?.producer).toBe('李四')
+    expect(doc.format.unknownTags).toEqual(['producer'])
+    const out = serializeLrc(doc)
+    expect(out).toBe('[producer:李四]\n[00:01.00]x\n')
+    // 再导入仍归 custom（往返）
+    const again = parseOk(out, PREFIX)
+    expect(again.meta.custom?.producer).toBe('李四')
+  })
+
+  test('d. 与 [ti:] 混排：metadataTags 顺序 = 源顺序', () => {
+    const src = '[ti:歌名]\n作词：张三\n[00:01.00]x\n'
+    const doc = parseOk(src, PREFIX)
+    expect(doc.format.metadataTags).toEqual([
+      [{ name: 'ti', value: '歌名' }],
+      [{ name: 'lyricist', value: '张三' }],
+    ])
+    expect(serializeLrc(doc)).toBe('[ti:歌名]\n[lyricist:张三]\n[00:01.00]x\n')
+  })
+
+  test('e. pristine 守护：多行元数据 + 识别一行 → 导出仍为多行（不塌成单行）', () => {
+    const src = '[ti:歌名]\n[ar:歌手]\n作词：张三\n[00:01.00]x\n'
+    const doc = parseOk(src, PREFIX)
+    expect(serializeLrc(doc)).toBe('[ti:歌名]\n[ar:歌手]\n[lyricist:张三]\n[00:01.00]x\n')
+  })
+
+  test('f. 默认关（不传 option）→ 作词行保留为歌词行', () => {
+    const src = '作词：张三\n[00:01.00]x\n'
+    const doc = parseOk(src)
+    expect(doc.meta.lyricist).toBeUndefined()
+    expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三', 'x'])
+    expect(serializeLrc(doc)).toBe(src)
+  })
+
+  test('g. 带时间戳的行不识别', () => {
+    const src = '[00:01.00]作词：张三\n'
+    const doc = parseOk(src, PREFIX)
+    expect(doc.meta.lyricist).toBeUndefined()
+    expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三'])
+  })
+
+  test('h. 第 11 条内容行不识别（窗口上限 10）', () => {
+    const src = 'a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n作词：张三\n[00:01.00]x\n'
+    const doc = parseOk(src, PREFIX)
+    expect(doc.meta.lyricist).toBeUndefined()
+    expect(doc.lines.filter((line) => line.text === '作词：张三')).toHaveLength(1)
+  })
+
+  test('i. 空值不识别', () => {
+    const src = '作词：\n[00:01.00]x\n'
+    const doc = parseOk(src, PREFIX)
+    expect(doc.meta.lyricist).toBeUndefined()
+    expect(doc.lines.filter((line) => line.text === '作词：')).toHaveLength(1)
+  })
+
+  test('j. 无分隔符不识别', () => {
+    const src = '作词张三\n[00:01.00]x\n'
+    const doc = parseOk(src, PREFIX)
+    expect(doc.meta.lyricist).toBeUndefined()
+    expect(doc.lines.filter((line) => line.text === '作词张三')).toHaveLength(1)
+  })
+
+  test('k. 第一条带时间戳行之后的前缀行不识别', () => {
+    const src = '[00:01.00]x\n作词：张三\n[00:02.00]y\n'
+    const doc = parseOk(src, PREFIX)
+    expect(doc.meta.lyricist).toBeUndefined()
+    expect(doc.lines.filter((line) => line.text === '作词：张三')).toHaveLength(1)
+  })
+})
