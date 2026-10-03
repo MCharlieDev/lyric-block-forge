@@ -203,6 +203,16 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
   const meta: LyricMetadata = {}
   /** 纯元数据行的原始标签序列：逐行记录「名 + 值」原序，供序列化保真写回。 */
   const metadataTags: Array<Array<{ name: string; value: string }>> = []
+  /** 空行记录（additive）：首条内容行之前。 */
+  const leadingBlanks: string[] = []
+  /** 空行记录（additive）：某条歌词行 id 之前。 */
+  const beforeLineBlanks: Record<string, string[]> = {}
+  /** 空行记录（additive）：最后一条歌词行之后、终止换行之前。 */
+  const trailingBlanks: string[] = []
+  /** 连续空行的暂存区，遇到下一条内容行时归位到对应锚点。 */
+  let pendingBlanks: string[] = []
+  /** 是否已消费首条非空行：用于区分「leading」与「beforeLine」。 */
+  let sawAnyLine = false
 
   let text = source
   let hasBOM = false
@@ -218,8 +228,29 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
   let sawTimestamp = false
   let sawWordTimestamp = false
 
-  for (const rawLine of text.split(/\r\n|\n|\r/)) {
-    if (rawLine.trim() === '') continue
+  /** 把暂存的空行归位到指定歌词行之前并落盘该行。 */
+  const placeLine = (line: LyricLine): void => {
+    if (!sawAnyLine) {
+      leadingBlanks.push(...pendingBlanks)
+    } else if (pendingBlanks.length > 0) {
+      ;(beforeLineBlanks[line.id] ??= []).push(...pendingBlanks)
+    }
+    pendingBlanks = []
+    sawAnyLine = true
+    lines.push(line)
+  }
+
+  const parts = text.split(/\r\n|\n|\r/)
+  // 文本以换行结尾时 split 末尾必有一个 '' 元素，是终止符产物而非真实空行。
+  // 终止换行由 serializeLrc 末尾固定补出，故此处剔除，避免多记一个假空行。
+  if (parts.length > 0 && parts[parts.length - 1] === '') parts.pop()
+
+  for (const rawLine of parts) {
+    if (rawLine.trim() === '') {
+      // 空行 / 仅含空白字符的行：存原文以保字节无损，等待归位到下一个锚点。
+      pendingBlanks.push(rawLine)
+      continue
+    }
 
     const timeMatches = Array.from(rawLine.matchAll(new RegExp(LINE_TAG_PATTERN, 'g')))
 
@@ -227,6 +258,14 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
     if (timeMatches.length === 0) {
       const tags = extractMetadataTags(rawLine)
       if (tags !== null) {
+        if (!sawAnyLine) {
+          // 元数据块之前的空行 → leading。
+          leadingBlanks.push(...pendingBlanks)
+          sawAnyLine = true
+        }
+        // TODO(空行·未来扩展)：元数据块内部的空行（两条元数据行之间）本轮丢弃，
+        // 属已知有损缺口；未来可在此承载（如在 metadataTags 同槽位记录）。
+        pendingBlanks = []
         metadataTags.push(tags)
         for (const { name, value } of tags) {
           switch (name) {
@@ -273,7 +312,7 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
     // 纯文本行：有时间的文件里视为未识别行，整篇无时间的文件里视为正文
     if (timeMatches.length === 0) {
       const role: LyricLineRole = sourceHasTimestamp ? 'unknown' : 'main'
-      lines.push(buildLine(rawLine.trim(), role, rawLine, [], []))
+      placeLine(buildLine(rawLine.trim(), role, rawLine, [], []))
       continue
     }
 
@@ -285,7 +324,7 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
     const enhanced = hasWordTags ? splitEnhancedText(content) : { text: content, words: [] as WordTimestamp[] }
 
     // 一行多个时间标签属于同一条歌词：保留为一个行的多个时间戳，不拆分
-    lines.push(
+    placeLine(
       buildLine(
         enhanced.text,
         'main',
@@ -296,6 +335,12 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
     )
   }
 
+  // 循环结束后仍暂存的空行：位于最后一条歌词行之后、终止换行之前 → trailing。
+  if (pendingBlanks.length > 0) {
+    trailingBlanks.push(...pendingBlanks)
+    pendingBlanks = []
+  }
+
   // 双语识别：按预设合并相邻同时间戳的双语行、拆分行内分隔符
   const bilingual = options.bilingual ?? {}
   const applyRecognizers = options.applyRecognizers ?? true
@@ -304,6 +349,17 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
     : { lines, mergedPairCount: 0, splitSeparatorCount: 0 }
 
   const detectedFormat = sawWordTimestamp ? 'enhanced-lrc' : sawTimestamp ? 'lrc' : lines.length > 0 ? 'plain' : 'unknown'
+
+  // 过滤孤儿锚点：双语合并会吞噬被动行，其 id 不再出现在 merged.lines 中，
+  // 挂在它上面的空行随之丢弃（降级规则：锚点消失即丢弃，不顺延）。
+  const presentIds = new Set(merged.lines.map((line) => line.id))
+  const beforeLine: Record<string, string[]> = {}
+  for (const [id, blanks] of Object.entries(beforeLineBlanks)) {
+    if (presentIds.has(id)) beforeLine[id] = blanks
+  }
+
+  const hasBlankLines =
+    leadingBlanks.length > 0 || trailingBlanks.length > 0 || Object.keys(beforeLine).length > 0
 
   const document = createLyricDocument({
     meta: Object.keys(custom).length > 0 ? { ...meta, custom } : meta,
@@ -316,6 +372,13 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
       unknownTags,
       bilingualSeparator: bilingual.separator ?? null,
       metadataTags: metadataTags.length > 0 ? metadataTags : undefined,
+      blankLines: hasBlankLines
+        ? {
+            ...(leadingBlanks.length > 0 ? { leading: leadingBlanks } : {}),
+            ...(Object.keys(beforeLine).length > 0 ? { beforeLine } : {}),
+            ...(trailingBlanks.length > 0 ? { trailing: trailingBlanks } : {}),
+          }
+        : undefined,
     },
   })
 

@@ -305,6 +305,8 @@ function renderMetadata(document: LyricDocument, preserveUnknownTags: boolean): 
  * - 行级时间标签按 `precisionMs` 决定小数位数（给出 `uniformPrecisionMs` 时统一）；
  * - 无时间的正文行 / 未识别行优先写回 `raw`；
  * - 未知元数据标签按 `format.unknownTags` 顺序写回（可由选项关闭）；
+ * - 空行按 `format.blankLines` 的行 ID 锚点在三个位置写回；锚点行不存在时该批
+ *   空行丢弃（不顺延），缺省 `undefined` 则不写空行；
  * - 换行符与 BOM 沿用文档记录，可用选项覆盖。
  *
  * @param document 歌词文档
@@ -316,13 +318,24 @@ export function serializeLrc(document: LyricDocument, options: SerializeOptions 
   const withBOM = options.withBOM ?? document.format.hasBOM
   const preserveUnknownTags = options.preserveUnknownTags ?? true
 
+  const blanks = document.format.blankLines
   const lines: string[] = []
+
+  // 空行写回点 1：首条内容行（元数据块 / 歌词行）之前。
+  if (blanks?.leading) lines.push(...blanks.leading)
 
   lines.push(...renderMetadata(document, preserveUnknownTags))
 
   for (const line of document.lines) {
+    // 空行写回点 2：该歌词行之前（先写空行，再写行）。
+    // 锚点行不在本次输出中（被删除 / 被双语合并吸收）→ 其空行自然不写，即丢弃。
+    const before = blanks?.beforeLine?.[line.id]
+    if (before) lines.push(...before)
     lines.push(...renderLine(line, options.uniformPrecisionMs))
   }
+
+  // 空行写回点 3：最后一条歌词行之后、终止换行之前。
+  if (blanks?.trailing) lines.push(...blanks.trailing)
 
   return (withBOM ? '\uFEFF' : '') + lines.join(lineEnding) + lineEnding
 }

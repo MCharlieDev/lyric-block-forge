@@ -58,6 +58,26 @@ export interface LyricFormatInfo {
    * 该字段取代此前的 `metadataLayout`（同槽位、元素变富、不并存）。
    */
   metadataTags?: Array<Array<{ name: string; value: string }>>
+  /**
+   * 源文件中的空行记录（additive，可选），以行 ID 锚定、原文存储。
+   *
+   * 空行不进 `document.lines`，只在此记录其位置与原文，序列化时按锚点写回。
+   * 三类位置：
+   * - `leading`：首条内容行（元数据块 / 歌词行）之前；
+   * - `beforeLine[id]`：某条歌词行 id 之前；
+   * - `trailing`：最后一条歌词行之后、终止换行之前。
+   *
+   * 空行含仅由空白字符构成的行（`trim() === ''`），存入原文以保证字节无损。
+   * 降级规则：锚点行在序列化时不存在（被删除 / 被双语合并吸收）→ 该批空行丢弃，
+   * 不顺延到下一锚点，避免空行累积。
+   *
+   * 缺省（`undefined`）表示无记录：序列化退回「不写空行」，输出与既有行为逐字一致。
+   */
+  blankLines?: {
+    leading?: string[]
+    beforeLine?: Record<string, string[]>
+    trailing?: string[]
+  }
 }
 
 /**

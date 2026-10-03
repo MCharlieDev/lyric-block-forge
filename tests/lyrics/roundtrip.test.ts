@@ -12,12 +12,13 @@
  * 每处 test.fails 均在用例名与注释里写明对应漏洞，修复时请一并更新本清单。
  *
  * 待修复漏洞清单（由 test.fails 量化）：
- *   V3 空行：解析时直接丢弃，文档无容器承载空行位置。
  *   V4 混合换行符：整篇只记一种 lineEnding（含 `\r\n` 即判为 CRLF），逐行差异丢失。
  *
  * 已修复（对应断言须为普通 test）：
  *   V1 重复标准标签：由 `format.metadataTags` 记录名值序列并逐字写回。
  *   V2 重复自定义标签：同上（自定义值取自 `meta.custom`）。
+ *   V3 空行：由 `format.blankLines` 以行 ID 锚定、原文存储并写回（空行不进 lines）。
+ *      元数据块内部（两条元数据行之间）的空行仍不承载，属已知有损缺口。
  *   V5 多标签行顺序：由 `format.metadataTags` 记录并写回原始顺序。
  *   V6 元数据跨行合并：由 `format.metadataTags` 记录原始分行并逐行写回。
  *
@@ -138,16 +139,6 @@ describe('往返漏洞（test.fails：修复后须摘除 .fails）', () => {
     expect(rt(src, RAW)).toBe(src)
   })
 
-  test.fails('V3 空行被丢弃：行间空行', () => {
-    const src = '[00:01.00]a\n\n[00:02.00]b\n'
-    expect(rt(src, RAW)).toBe(src)
-  })
-
-  test.fails('V3 空行被丢弃：首尾空行', () => {
-    const src = '\n[00:01.00]a\n\n'
-    expect(rt(src, RAW)).toBe(src)
-  })
-
   test.fails('V4 混合换行符被统一：CRLF 中夹一个 LF', () => {
     const src = '[00:01.00]a\r\n[00:02.00]b\n[00:03.00]c\r\n'
     expect(rt(src, RAW)).toBe(src)
@@ -201,5 +192,76 @@ describe('元数据标签序列（additive 字段 metadataTags）', () => {
     const doc = parseOk(src, RAW)
     const edited = { ...doc, meta: { ...doc.meta, title: 'c' } }
     expect(serializeLrc(edited)).toBe('[ti:c]\n')
+  })
+})
+
+describe('空行保真（additive 字段 blankLines）', () => {
+  test('V3 空行保持：行间空行（行 ID 锚定）', () => {
+    const src = '[00:01.00]a\n\n[00:02.00]b\n'
+    expect(rt(src, RAW)).toBe(src)
+    const doc = parseOk(src, RAW)
+    // 空行不进 lines：只有两条歌词行。
+    expect(doc.lines.map((line) => line.text)).toEqual(['a', 'b'])
+    // 空行挂在后一行 id 之前。
+    expect(doc.format.blankLines?.beforeLine?.[doc.lines[1].id]).toEqual([''])
+  })
+
+  test('V3 空行保持：首尾空行（leading + trailing）', () => {
+    const src = '\n[00:01.00]a\n\n'
+    expect(rt(src, RAW)).toBe(src)
+    const doc = parseOk(src, RAW)
+    expect(doc.format.blankLines?.leading).toEqual([''])
+    expect(doc.format.blankLines?.trailing).toEqual([''])
+  })
+
+  test('缺省：无空行的文档 blankLines 为 undefined，输出与既有行为一致', () => {
+    const src = '[00:01.00]a\n[00:02.00]b\n'
+    const doc = parseOk(src, RAW)
+    expect(doc.format.blankLines).toBeUndefined()
+    expect(serializeLrc(doc)).toBe(src)
+  })
+
+  test('CRLF 空行：换行符为 CRLF 时逐字往返', () => {
+    const src = '[00:01.00]a\r\n\r\n[00:02.00]b\r\n'
+    expect(rt(src, RAW)).toBe(src)
+  })
+
+  test('空白字符行：按空行处理且存原文（保字节无损）', () => {
+    const src = '[00:01.00]a\n   \n[00:02.00]b\n'
+    expect(rt(src, RAW)).toBe(src)
+    const doc = parseOk(src, RAW)
+    expect(doc.format.blankLines?.beforeLine?.[doc.lines[1].id]).toEqual(['   '])
+  })
+
+  test('元数据前空行：记入 leading', () => {
+    const src = '\n[ti:a]\n[00:01.00]x\n'
+    expect(rt(src, RAW)).toBe(src)
+    expect(parseOk(src, RAW).format.blankLines?.leading).toEqual([''])
+  })
+
+  test('双尾随空行：trailing 记两个空行', () => {
+    const src = '[00:01.00]a\n\n\n'
+    expect(rt(src, RAW)).toBe(src)
+    expect(parseOk(src, RAW).format.blankLines?.trailing).toEqual(['', ''])
+  })
+
+  test('源不以换行结尾：补一个换行（既有行为不变）', () => {
+    const src = '[00:01.00]a'
+    expect(rt(src, RAW)).toBe(`${src}\n`)
+  })
+
+  test('交叉点：元数据非 pristine 时，歌词区空行仍写回', () => {
+    const src = '[ti:a]\n\n[00:01.00]x\n'
+    const doc = parseOk(src, RAW)
+    const edited = { ...doc, meta: { ...doc.meta, title: 'c' } }
+    expect(serializeLrc(edited)).toBe('[ti:c]\n\n[00:01.00]x\n')
+  })
+
+  test('降级：锚点行被删除 → 该批空行丢弃（不顺延）', () => {
+    const src = '[00:01.00]a\n\n[00:02.00]b\n'
+    const doc = parseOk(src, RAW)
+    // 模拟删除 b：lines 中移除 b，b 前的空行随之丢弃。
+    const withoutB = { ...doc, lines: doc.lines.filter((line) => line.text !== 'b') }
+    expect(serializeLrc(withoutB)).toBe('[00:01.00]a\n')
   })
 })
