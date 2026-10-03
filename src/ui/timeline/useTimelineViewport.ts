@@ -414,9 +414,12 @@ export function createTimelineViewportKernel(): TimelineViewportKernel {
       const ppms = pixelsPerMs
       const before = viewStartMs
       // dt 下界防呆（同 startWheelLerp）：防止负 dt 造成方向反转
-      applyView(viewStartMs + (autoPanVelocity * Math.max(0, dt)) / 1000 / ppms, ppms)
-      // 位置没变 = 已顶到内容边界（被 clamp 住），停止
-      if (viewStartMs === before) {
+      const safeDt = Math.max(0, dt)
+      applyView(viewStartMs + (autoPanVelocity * safeDt) / 1000 / ppms, ppms)
+      // 位置没变且本帧确有推进量 = 已顶到内容边界（被 clamp 住），停止。
+      // 必须带上 safeDt > 0 守卫：首帧 rAF 时间戳可能早于起手取的 performance.now()，
+      // dt ≤ 0 时位移恒为 0，若不加守卫会被误判成“到边界”而首帧自停（每次 pointermove 重演）。
+      if (safeDt > 0 && viewStartMs === before) {
         stopAutoPan()
         return
       }

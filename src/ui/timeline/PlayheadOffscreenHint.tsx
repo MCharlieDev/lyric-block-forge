@@ -1,8 +1,14 @@
 import { useCallback, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { useAdapters } from '../context/AdapterContext'
-import { useEditorStore } from '../stores/editorStore'
 import { useSettingsStore } from '../stores/settingsStore'
-import { pauseAudioOnGesture } from '../utils/editorCommands'
+import {
+  beginScrub,
+  endScrub,
+  moveScrub,
+  pauseAudioOnGesture,
+  resolvePlayheadMs,
+  seekPlayhead,
+} from '../utils/editorCommands'
 import {
   PLAYHEAD_HINT_ARROW_HEIGHT_PX,
   PLAYHEAD_HINT_ARROW_WIDTH_PX,
@@ -30,7 +36,6 @@ import { useTimelineViewportContext } from './viewportContext'
 export function PlayheadOffscreenHint() {
   const adapters = useAdapters()
   const { kernel, durationMs } = useTimelineViewportContext()
-  const setPlayhead = useEditorStore((state) => state.setPlayhead)
 
   const arrowRef = useRef<HTMLButtonElement | null>(null)
   const resetRef = useRef<HTMLButtonElement | null>(null)
@@ -59,7 +64,7 @@ export function PlayheadOffscreenHint() {
         return
       }
 
-      const x = timeToX(adapters.audio.getCurrentTimeMs(), frame.view)
+      const x = timeToX(resolvePlayheadMs(adapters), frame.view)
       if (x >= 0 && x <= widthPx) {
         arrow.style.display = 'none'
         reset.style.display = 'none'
@@ -83,16 +88,20 @@ export function PlayheadOffscreenHint() {
 
   useTimelineFrame(kernel, handleFrame)
 
-  /** 把指针横坐标夹进视窗，换算成时间并定位播放头。 */
-  const seekToClientX = (clientX: number): void => {
+  /**
+   * 把指针横坐标夹进视窗，换算成时间并定位播放头。
+   *
+   * @returns 夹取后的时间（毫秒）；宿主不可测时返回 `null`
+   */
+  const seekToClientX = (clientX: number): number | null => {
     const rect = hostRect()
-    if (rect === null || rect.width <= 0) return
+    if (rect === null || rect.width <= 0) return null
     const inViewX = Math.min(rect.width, Math.max(0, clientX - rect.left))
     const frame = kernel.getFrame()
     const timeMs = xToTime(inViewX, { startMs: frame.view.startMs, pixelsPerMs: frame.view.pixelsPerMs })
     const clamped = Math.min(durationMs, Math.max(0, timeMs))
-    setPlayhead(clamped)
-    void adapters.audio.seek(clamped)
+    seekPlayhead(adapters, clamped)
+    return clamped
   }
 
   const handleArrowDown = (event: ReactPointerEvent<HTMLButtonElement>): void => {
@@ -105,12 +114,16 @@ export function PlayheadOffscreenHint() {
     event.currentTarget.setPointerCapture(event.pointerId)
     // 先真暂停再 seek：pause 后 wasPlaying=false，seek 不会重建 source 节点
     pauseAudioOnGesture(adapters, useSettingsStore.getState().settings.pauseAudioOnSeek)
-    seekToClientX(event.clientX)
+    // 放开播放头：先落会话初值（保住拖动开始前的位置），再按指针接管
+    beginScrub(resolvePlayheadMs(adapters))
+    const clamped = seekToClientX(event.clientX)
+    if (clamped !== null) moveScrub(clamped)
   }
 
   const handleArrowMove = (event: ReactPointerEvent<HTMLButtonElement>): void => {
     if (pointerIdRef.current !== event.pointerId) return
-    seekToClientX(event.clientX)
+    const clamped = seekToClientX(event.clientX)
+    if (clamped !== null) moveScrub(clamped)
   }
 
   const handleArrowUp = (event: ReactPointerEvent<HTMLButtonElement>): void => {
@@ -118,6 +131,7 @@ export function PlayheadOffscreenHint() {
     draggingRef.current = false
     pointerIdRef.current = null
     event.currentTarget.style.opacity = '1'
+    endScrub()
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
@@ -129,7 +143,7 @@ export function PlayheadOffscreenHint() {
     event.preventDefault()
     event.stopPropagation()
     // 归位 = 拉回播放头（带动画）+ 恢复跟随
-    kernel.snapViewToPlayhead(adapters.audio.getCurrentTimeMs())
+    kernel.snapViewToPlayhead(resolvePlayheadMs(adapters))
   }
 
   return (

@@ -1,11 +1,7 @@
-import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
-import { useAdapters } from '../context/AdapterContext'
+import { useEffect, useRef } from 'react'
 import { LABEL_MIN_GAP_PX, RULER_HEIGHT_PX } from './constants'
 import { formatTimecode } from '../utils/format'
-import { pauseAudioOnGesture } from '../utils/editorCommands'
-import { adaptiveGridMs, timeToX, xToTime } from './timeMap'
-import { useEditorStore } from '../stores/editorStore'
-import { useSettingsStore } from '../stores/settingsStore'
+import { adaptiveGridMs, timeToX } from './timeMap'
 import { useTimelineSnapshot, type TimelineFrame } from './useTimelineViewport'
 import { useTimelineViewportContext } from './viewportContext'
 
@@ -13,17 +9,15 @@ import { useTimelineViewportContext } from './viewportContext'
  * 时间刻度尺（架构文档 §6.1 第二层）。
  *
  * 与波形共用同一个 `frame.view`，因此刻度线与波形网格天然重合。
- * 支持在刻度尺上按下 / 拖动直接定位播放头（拖动即"擦洗"）。
+ * 本层**只负责绘制**：「按尺子任意处抓播放头拖动」已统一到
+ * {@link ./PlayheadLayer} 的尺子带热区（原擦洗手势已删除）。
  */
 export function TimeRuler() {
-  const adapters = useAdapters()
-  const { kernel, durationMs } = useTimelineViewportContext()
+  const { kernel } = useTimelineViewportContext()
   const snapshot = useTimelineSnapshot(kernel)
-  const setPlayhead = useEditorStore((state) => state.setPlayhead)
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const widthRef = useRef(0)
-  const scrubbingRef = useRef(false)
 
   const widthPx = snapshot.viewportWidthPx
 
@@ -89,51 +83,10 @@ export function TimeRuler() {
     return unsubscribe
   }, [kernel])
 
-  /** 把视口内的横坐标换算成时间并定位播放头。 */
-  const seekAt = useCallback(
-    (clientX: number): void => {
-      const canvas = canvasRef.current
-      if (canvas === null) return
-      const rect = canvas.getBoundingClientRect()
-      const timeMs = xToTime(clientX - rect.left, {
-        startMs: kernel.getFrame().view.startMs,
-        pixelsPerMs: kernel.getFrame().view.pixelsPerMs,
-      })
-      const clamped = Math.min(durationMs, Math.max(0, timeMs))
-      setPlayhead(clamped)
-      void adapters.audio.seek(clamped)
-    },
-    [adapters, durationMs, kernel, setPlayhead],
-  )
-
-  const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>): void => {
-    scrubbingRef.current = true
-    // 先真暂停再 seek：pause 后 wasPlaying=false，seek 不会重建 source 节点。
-    pauseAudioOnGesture(adapters, useSettingsStore.getState().settings.pauseAudioOnSeek)
-    event.currentTarget.setPointerCapture(event.pointerId)
-    seekAt(event.clientX)
-  }
-
-  const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>): void => {
-    if (!scrubbingRef.current) return
-    seekAt(event.clientX)
-  }
-
-  const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>): void => {
-    if (!scrubbingRef.current) return
-    scrubbingRef.current = false
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-  }
-
+  // canvas 的 cursor-col-resize class 保留：仅供 harness rulerRect() 定位；canvas 已不再接手势。
   return (
     <canvas
       ref={canvasRef}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
       className="block w-full shrink-0 cursor-col-resize touch-none"
       style={{ height: `${RULER_HEIGHT_PX}px` }}
     />

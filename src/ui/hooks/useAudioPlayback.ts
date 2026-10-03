@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useAdapters } from '../context/AdapterContext'
 import { useEditorStore } from '../stores/editorStore'
+import { isScrubbing } from '../utils/editorCommands'
 
 /**
  * 播放头写回 store 的最小间隔。
@@ -36,6 +37,9 @@ export function useAudioPlayback(): void {
   useEffect(() => {
     let lastWriteMs = 0
     return adapters.audio.onTick((timeMs) => {
+      // 拖动播放头期间不回灌 store：位置由拖动会话独占（`resolvePlayheadMs`
+      // 会读会话值），否则 10Hz 镜像会把播放头往回拽。放在节流判断之前。
+      if (isScrubbing()) return
       const now = performance.now()
       if (now - lastWriteMs < PLAYHEAD_WRITE_INTERVAL_MS) return
       lastWriteMs = now

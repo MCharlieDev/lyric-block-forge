@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useAdapters } from '../context/AdapterContext'
 import { useEditorStore } from '../stores/editorStore'
-import { stampActiveLine, togglePlayback } from '../utils/editorCommands'
+import { seekPlayhead, stampActiveLine, togglePlayback } from '../utils/editorCommands'
 import { formatDuration } from '../utils/format'
 
 /**
@@ -31,7 +31,6 @@ export function PlaybackBar() {
   const adapters = useAdapters()
   const playback = useEditorStore((state) => state.playback)
   const audioAsset = useEditorStore((state) => state.audioAsset)
-  const setPlayhead = useEditorStore((state) => state.setPlayhead)
   const setRate = useEditorStore((state) => state.setRate)
   const setVolume = useEditorStore((state) => state.setVolume)
 
@@ -72,8 +71,7 @@ export function PlaybackBar() {
   }, [setVolume])
 
   const handleSeek = (timeMs: number): void => {
-    setPlayhead(timeMs)
-    if (hasAudio) void adapters.audio.seek(timeMs)
+    seekPlayhead(adapters, timeMs)
   }
 
   return (

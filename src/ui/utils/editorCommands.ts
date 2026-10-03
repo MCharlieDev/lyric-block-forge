@@ -49,12 +49,98 @@ export function pauseAudioOnGesture(adapters: AdapterContext, enabled: boolean):
 }
 
 /**
+ * 播放头拖动会话（模块级单例）。
+ *
+ * ## 为什么放模块级，而不是 store / React state
+ * - 拖动期间每帧都要读这个值（{@link resolvePlayheadMs} 被各图层每帧调用），
+ *   放 React state 会造成 60Hz 重渲染，放 store 同样会高频通知订阅者；
+ * - 拖动是**瞬时交互状态**：没有跨会话持久化需求，也不该进撤销栈；
+ * - 本模块不 import 时间轴目录，作为会话宿主可避免循环依赖。
+ *
+ * 单进程单实例假设：同一时刻只允许一个拖动会话（指针 capture 已保证）。
+ */
+let scrubMs: number | null = null
+
+/** 是否正在拖动播放头。 */
+export function isScrubbing(): boolean {
+  return scrubMs !== null
+}
+
+/** 拖动会话中的当前时间（毫秒）；不在拖动中返回 `null`。 */
+export function getScrubMs(): number | null {
+  return scrubMs
+}
+
+/**
+ * 开始拖动会话。
+ *
+ * `pointerdown` 即调用（**按住即接管**，不等移动）。
+ *
+ * @param timeMs 接管瞬间的播放头时间（毫秒）
+ */
+export function beginScrub(timeMs: number): void {
+  scrubMs = timeMs
+}
+
+/** 更新拖动会话时间（毫秒）。 */
+export function moveScrub(timeMs: number): void {
+  scrubMs = timeMs
+}
+
+/** 结束拖动会话。 */
+export function endScrub(): void {
+  scrubMs = null
+}
+
+/**
+ * 解析"当前时间"（播放头所在毫秒）。
+ *
+ * ## 为什么收口成一个函数
+ * "当前时间"有三个可能来源，全项目只在这一次分流（优先级从高到低）：
+ * - 拖动中：拖动会话值 {@link getScrubMs}（**最高优先级**，"按住即接管、跟手"）；
+ * - 有音频：音频时钟 {@link AudioPort.getCurrentTimeMs}（每帧可读，唯一时钟基准）；
+ * - 无音频：store 的 `playback.playheadMs`（端口没有 buffer，恒为 0，承载不了
+ *   用户点出来的非零位置）。
+ *
+ * 有音频时**不能**退回 `playback.playheadMs`：它是 10Hz 节流后的镜像
+ * （见 `useAudioPlayback`），读数会偏。
+ *
+ * @param adapters 平台能力集合
+ */
+export function resolvePlayheadMs(adapters: AdapterContext): number {
+  if (scrubMs !== null) return scrubMs
+  if (adapters.audio.getDurationMs() > 0) return adapters.audio.getCurrentTimeMs()
+  return useEditorStore.getState().playback.playheadMs
+}
+
+/**
+ * 定位播放头（**唯一的写入口**）。
+ *
+ * store 的读数镜像与音频端口的真实时钟必须成对写入，故收成一处。
+ * 无音频时**不调端口**：端口没有 buffer，`seek` 会把位置夹回 0，
+ * 反而抹掉刚写进 store 的可见位置（这正是"无音频点时间轴看不见播放头动"的根因）。
+ *
+ * ## 上界
+ * 本函数只沿用 `setPlayhead` 现有的口径（`Math.max(0, Math.round)`）；
+ * 上界由调用方按各自的 `durationMs` 预夹后传入
+ * （音频时长与时间轴内容时长并不相等，只有调用方知道该用哪个）。
+ *
+ * @param adapters 平台能力集合
+ * @param timeMs 目标时间（毫秒）
+ */
+export function seekPlayhead(adapters: AdapterContext, timeMs: number): void {
+  useEditorStore.getState().setPlayhead(timeMs)
+  if (adapters.audio.getDurationMs() > 0) void adapters.audio.seek(timeMs)
+}
+
+/**
  * 对当前选中行打轴，并把选中推进到下一可见行。
  *
  * ## 时间来源
- * 时间必须取音频时钟 {@link AudioPort.getCurrentTimeMs}。
- * **不能用 `playback.playheadMs`**：它是 10Hz 节流后的镜像（见 `useAudioPlayback`），
- * 读数会偏，打轴精度直接受损。
+ * 取 {@link resolvePlayheadMs}：有音频时是音频时钟
+ * （{@link AudioPort.getCurrentTimeMs}，打轴精度依赖它，**不能用 10Hz 节流的
+ * `playback.playheadMs`**）；无音频时是 store 里承载的播放头位置
+ * （端口恒为 0，用 0 打轴会与用户看见的播放头位置不符）。
  *
  * ## 行集合
  * 一律按"可见行"判定（`selectVisibleLines`）：被删除的行仍留在 `document.lines` 里，
@@ -64,7 +150,7 @@ export function pauseAudioOnGesture(adapters: AdapterContext, enabled: boolean):
  * - 没有可见行：静默返回（无行可打）；
  * - 没有任何选中行：静默返回（无选中是合法状态，打轴必须有明确目标）；
  * - `activeLineId` 指向不存在的行（已被删除）：静默返回，不打轴；
- * - 没有音频：`getCurrentTimeMs()` 返回 0，用 0ms 打轴（允许）；
+ * - 没有音频：用 store 里承载的播放头位置打轴（与用户看见的播放头一致）；
  * - 同一行重复打轴：允许覆盖，每次追加一条新日志（可撤销）；
  * - 打完已是最后一行：保持选中不动（不清空选中）。
  *
@@ -81,7 +167,7 @@ export function stampActiveLine(adapters: AdapterContext): void {
   // 选中行已被删除（不在可见行里）：静默返回，不误打到别的行
   if (!visible.some((line) => line.id === activeId)) return
 
-  store.stampLine(activeId, adapters.audio.getCurrentTimeMs())
+  store.stampLine(activeId, resolvePlayheadMs(adapters))
 
   const next = visible[visible.findIndex((line) => line.id === activeId) + 1]
   if (next !== undefined) store.selectLine(next.id)
