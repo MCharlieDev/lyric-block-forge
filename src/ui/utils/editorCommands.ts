@@ -98,18 +98,24 @@ export function endScrub(): void {
  * ## 为什么收口成一个函数
  * "当前时间"有三个可能来源，全项目只在这一次分流（优先级从高到低）：
  * - 拖动中：拖动会话值 {@link getScrubMs}（**最高优先级**，"按住即接管、跟手"）；
- * - 有音频：音频时钟 {@link AudioPort.getCurrentTimeMs}（每帧可读，唯一时钟基准）；
- * - 无音频：store 的 `playback.playheadMs`（端口没有 buffer，恒为 0，承载不了
- *   用户点出来的非零位置）。
+ * - 播放中且有音频：音频时钟 {@link AudioPort.getCurrentTimeMs}（每帧可读，唯一时钟基准）；
+ * - 其余（暂停 / 无音频）：store 的 `playback.playheadMs`
+ *   （无音频时端口恒为 0；暂停时端口 seek 会把位置夹回音频时长，
+ *   退不回尾巴区，故改用 store 承载用户点出来的位置）。
  *
- * 有音频时**不能**退回 `playback.playheadMs`：它是 10Hz 节流后的镜像
+ * 播放中**不能**退回 `playback.playheadMs`：它是 10Hz 节流后的镜像
  * （见 `useAudioPlayback`），读数会偏。
  *
  * @param adapters 平台能力集合
  */
 export function resolvePlayheadMs(adapters: AdapterContext): number {
   if (scrubMs !== null) return scrubMs
-  if (adapters.audio.getDurationMs() > 0) return adapters.audio.getCurrentTimeMs()
+  if (
+    adapters.audio.getDurationMs() > 0 &&
+    useEditorStore.getState().playback.isPlaying
+  ) {
+    return adapters.audio.getCurrentTimeMs()
+  }
   return useEditorStore.getState().playback.playheadMs
 }
 
@@ -195,8 +201,50 @@ export const NUDGE_STEP_MS = 10
  * - 已在首 / 末可见行：不动（不清空选中）。
  *
  * @param direction `-1` 上一行，`1` 下一行
+ * @param options.keepSelection `true`（`Ctrl+↑/↓`）→ 只挪光标、**保选区**并重设
+ *   锚点（走 {@link EditorState.setActiveLine}）；省略 / `false` → 现状
+ *   （走 `selectLine`，选区重置为「新行单选」）。
  */
-export function moveSelection(direction: -1 | 1): void {
+export function moveSelection(
+  direction: -1 | 1,
+  options: { keepSelection?: boolean } = {},
+): void {
+  const store = useEditorStore.getState()
+  const visible = selectVisibleLines(store.document, store.replay)
+  const first = visible[0]
+  if (first === undefined) return
+
+  // 落点提交方式分流：keep 模式保选区，默认模式单选重置
+  const commit =
+    options.keepSelection === true
+      ? (id: string): void => store.setActiveLine(id)
+      : (id: string): void => store.selectLine(id)
+
+  const activeId = store.selection.activeLineId
+  const currentIndex = activeId === null ? -1 : visible.findIndex((line) => line.id === activeId)
+  if (currentIndex === -1) {
+    commit(first.id)
+    return
+  }
+
+  const target = visible[currentIndex + direction]
+  if (target === undefined) return
+  commit(target.id)
+}
+
+/**
+ * `Shift+↑/↓`：从锚点范围选到相邻可见行（含两端）。
+ *
+ * 范围计算**不在这里重写**，直接复用 {@link EditorState.selectLineRange} 的
+ * 「锚点→目标全纳、`activeLineId` = 目标行、锚点不动」口径；本函数只负责
+ * 按光标位置求出目标行。
+ *
+ * 无光标（`currentIndex === -1`）→ 退化为 `selectLine(visible[0])`，与
+ * 鼠标「无锚点时 Shift+点击 = 普通点击」的退化口径一致。
+ *
+ * @param direction `-1` 上一行，`1` 下一行
+ */
+export function moveSelectionRange(direction: -1 | 1): void {
   const store = useEditorStore.getState()
   const visible = selectVisibleLines(store.document, store.replay)
   const first = visible[0]
@@ -211,15 +259,44 @@ export function moveSelection(direction: -1 | 1): void {
 
   const target = visible[currentIndex + direction]
   if (target === undefined) return
-  store.selectLine(target.id)
+  store.selectLineRange(target.id)
+}
+
+/**
+ * `Esc`：清空行选区，**光标不动**。
+ *
+ * 只调用 {@link EditorState.setCursorOnly}（`lineIds` 清空、`activeLineId` /
+ * 锚点设为该行），不改其实现 —— 该 action 原为 Tab 导航专用，此处借它的
+ * 「清选区 + 保光标」语义。无光标（`activeLineId === null`）→ 无操作
+ * （由单向不变量，此时 `lineIds` 必为空，无需清）。
+ */
+export function clearSelectionKeepCursor(): void {
+  const store = useEditorStore.getState()
+  const activeId = store.selection.activeLineId
+  if (activeId === null) return
+  store.setCursorOnly(activeId)
+}
+
+/**
+ * `Ctrl+Enter`：光标行加入 / 移出选区（开关）。
+ *
+ * 薄封装，直接转交 {@link EditorState.toggleActiveLineSelection}，
+ * 让 hotkeys 统一从命令层取入口。
+ */
+export function toggleCursorSelection(): void {
+  useEditorStore.getState().toggleActiveLineSelection()
 }
 
 /**
  * 对当前选中行做相对偏移（微调）。
  *
  * ## 单块 / 多选同一口径
- * - 选中集 ≥ 2 行：整组一起偏移；参与集 = 选中 ∩ 可平移，空则静默返回；
- * - 其余（0 行 / 1 行）：走单块口径。
+ * - 选中集 ≥ 1 行：整组一起偏移；参与集 = 选中 ∩ 可平移，空则静默返回；
+ * - 其余（0 行）：走单块口径（读光标行 `activeLineId`）。
+ *
+ * 阈值定为 1（而非旧的 2）是为了覆盖新状态 `{lineIds:[A], active:B}`：只要有
+ * 选中行就以**选中集**为基准。旧状态下 `lineIds` 单行时 `activeLineId` 必等于
+ * 该行，故旧行为逐字段等价；仅上述新状态下由「动 B」改为「动 A」。
  *
  * 两条分支最终都调 {@link EditorState.moveLinesByOffset}，因此"哪些行参与、空集怎么办"
  * 只有一处实现（单成员在内部再分流到 `nudgeLine`，落 `manual-nudge`，与既有行为逐字段一致）。
@@ -239,11 +316,11 @@ export function moveSelection(direction: -1 | 1): void {
 export function nudgeSelection(deltaMs: number): void {
   const store = useEditorStore.getState()
 
-  // 多选：集合级判定 —— 只要有一行不可平移（未打轴 / 已删）→ 整组拒绝（静默返回）。
+  // 集合级判定（选中集 ≥ 1 行）—— 只要有一行不可平移（未打轴 / 已删）→ 整组拒绝（静默返回）。
   // "可平移"统一走 lineIsMovable（三处共用一个定义，入口层不各写一遍）。
   // 拒绝必须在此入口表达，不得依赖 moveLinesByOffset 的内层过滤兜底
   // （否则会"静默只动已打轴子集"，与裁决冲突）。
-  if (store.selection.lineIds.length >= 2) {
+  if (store.selection.lineIds.length >= 1) {
     const allMovable = store.selection.lineIds.every((id) => lineIsMovable(store.replay, id))
     if (!allMovable) {
       showToast('无法微调：所选行含未打轴行')

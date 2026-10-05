@@ -31,6 +31,13 @@ export function useAudioPlayback(): void {
   useEffect(() => {
     return adapters.audio.onStateChange((state) => {
       useEditorStore.getState().setPlaying(state === 'playing')
+      // 暂停 / 结束时把端口位置同步一次进 store：暂停态下 `resolvePlayheadMs`
+      // 改读 store（才能停在尾巴区），而 tick 在暂停时不再发射，store 会
+      // 滞后于端口，故在此补一次精确写入。无音频时不写：订阅会立即触发一次，
+      // 此时 `getCurrentTimeMs()` 恒为 0，会把 store 误写为 0。
+      if (state !== 'playing' && adapters.audio.getDurationMs() > 0) {
+        useEditorStore.getState().setPlayhead(adapters.audio.getCurrentTimeMs())
+      }
     })
   }, [adapters])
 

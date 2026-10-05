@@ -58,14 +58,16 @@ export function LyricBlockPanel() {
   const selectedLineIds = useEditorStore((state) => state.selection.lineIds)
   const selectedLineIdSet = useMemo(() => new Set(selectedLineIds), [selectedLineIds])
   const selectLine = useEditorStore((state) => state.selectLine)
+  const setCursorOnly = useEditorStore((state) => state.setCursorOnly)
   const toggleLineSelection = useEditorStore((state) => state.toggleLineSelection)
   const selectLineRange = useEditorStore((state) => state.selectLineRange)
   const swapLineText = useEditorStore((state) => state.swapLineText)
   const removeLine = useEditorStore((state) => state.removeLine)
   const appendBlankLine = useEditorStore((state) => state.appendBlankLine)
 
-  // 行节点表：activeLineId 变化时据此定位目标行
-  const itemRefs = useRef(new Map<string, HTMLLIElement>())
+  // 行节点表：键 = 行 ID，值 = 该行的**可聚焦元素**（role=button 文本热区）。
+  // activeLineId 变化时据此定位目标行：既用于滚动居中，也用于把 DOM 焦点移过去。
+  const itemRefs = useRef(new Map<string, HTMLDivElement>())
   // 观测列表自身宽度（见 PANEL_NARROW_WIDTH_PX 注释：面板宽度 ≠ 视口宽度）
   const listRef = useRef<HTMLUListElement | null>(null)
   const [narrow, setNarrow] = useState(false)
@@ -118,6 +120,20 @@ export function LyricBlockPanel() {
     if (Math.abs(target - container.scrollTop) < rowHeight) return
 
     container.scrollTo({ top: target, behavior: 'smooth' })
+  }, [activeLineId])
+
+  // 焦点跟随光标：`activeLineId` 是「当前行」的唯一真源，DOM 焦点永远跟随它。
+  // 时间轴块（tabIndex=-1）永远无法承载焦点，所以只能是焦点跟随选区，不能反过来。
+  // 防自激：目标行已是 activeElement 时直接返回 —— 否则 focus → onFocus →
+  // setCursorOnly → activeLineId 变化 → 本 effect → focus 会形成回环。
+  // 不在 itemRefs（非可见 / 已删行）时不操作，焦点回落 body 可接受。
+  useEffect(() => {
+    if (activeLineId === null) return
+    const row = itemRefs.current.get(activeLineId)
+    if (row === undefined || !row.isConnected) return
+    if (window.document.activeElement === row) return
+    // preventScroll：滚动居中由上面那条 effect 负责，这里不抢滚动
+    row.focus({ preventScroll: true })
   }, [activeLineId])
 
   /** 组装一行的四个操作。上移 / 下移的禁用态按**可见行下标**判断。 */
@@ -188,10 +204,6 @@ export function LyricBlockPanel() {
             return (
               <li
                 key={line.id}
-                ref={(element) => {
-                  if (element === null) itemRefs.current.delete(line.id)
-                  else itemRefs.current.set(line.id, element)
-                }}
                 className={`transition-colors ${
                   isActive ? 'bg-accent/10' : inSelection ? 'bg-accent/5' : 'hover:bg-white/5'
                 }`}
@@ -199,12 +211,26 @@ export function LyricBlockPanel() {
                 {/*
                   行根必须是 div 而不是 button：右侧要嵌独立 button，
                   而 button 不能嵌套 button（HTML 规范，浏览器行为未定义）。
-                  文本热区保留 role=button + tabIndex + Enter/Space，补回键盘可达性。
+                  文本热区保留 role=button + tabIndex + Enter，补回键盘可达性。
+                  Space 不在行内处理：交给全局打轴（stampActiveLine），
+                  否则行处理器会先把选区拉回焦点行。
                 */}
                 <div className="flex items-start">
                   <div
                     role="button"
                     tabIndex={0}
+                    ref={(element) => {
+                      if (element === null) itemRefs.current.delete(line.id)
+                      else itemRefs.current.set(line.id, element)
+                    }}
+                    onFocus={(event) => {
+                      // 守卫 1（防自激）：光标已在此行（含「焦点跟随」effect 的程序化聚焦）→ 早退
+                      if (useEditorStore.getState().selection.activeLineId === line.id) return
+                      // 守卫 2（防误清）：只有键盘聚焦（Tab）才走「清空选中」；
+                      // 鼠标点击的行聚焦交给 onClick，否则点击 / Ctrl+click 会先被清空
+                      if (!event.currentTarget.matches(':focus-visible')) return
+                      setCursorOnly(line.id)
+                    }}
                     onClick={(event) => {
                       // 修饰键分派：Shift 范围选 > Ctrl/Cmd 切换 > 普通单选
                       if (event.shiftKey) selectLineRange(line.id)
@@ -212,11 +238,14 @@ export function LyricBlockPanel() {
                       else selectLine(line.id)
                     }}
                     onKeyDown={(event) => {
-                      if (event.key !== 'Enter' && event.key !== ' ') return
+                      // Enter = 正式选中该行（等同点击）；Space 交给全局打轴
+                      if (event.key !== 'Enter') return
+                      // 带修饰键的 Enter 交给 window hotkeys（Ctrl/Cmd+Enter = 开关选区）
+                      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return
                       event.preventDefault()
                       selectLine(line.id)
                     }}
-                    className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 px-3 py-2"
+                    className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 px-3 py-2 focus:outline-none"
                   >
                     <span className="w-6 shrink-0 pt-0.5 text-right text-[11px] text-neutral-600">
                       {index + 1}

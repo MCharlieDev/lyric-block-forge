@@ -563,6 +563,23 @@ export function LyricTrack() {
     kernel.resumeFollow(useSettingsStore.getState().settings.followResumeMode, adapters.audio.getCurrentTimeMs())
   }
 
+  /**
+   * 单块拖动提交后，把选中推进到「下一可见行」。
+   *
+   * 拖动开始时 `selectLine` 已选中被拖行（见 pointerdown），提交后重新取
+   * **提交后**的 document / replay 派生可见行，取被拖行的下一行；若被拖行是
+   * 末行、或已不在可见行里（例如整组被删），则清空选区（三字段全清）。
+   * 仅单块提交支路调用：多选提交与多选确认路径不动选区。
+   */
+  const selectNextVisibleLineAfterCommit = (pressedLineId: string): void => {
+    const state = useEditorStore.getState()
+    const visible = selectVisibleLines(state.document, state.replay)
+    const index = visible.findIndex((line) => line.id === pressedLineId)
+    const next = index >= 0 ? visible[index + 1] : undefined
+    if (next !== undefined) selectLine(next.id)
+    else clearLineSelection()
+  }
+
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const session = dragRef.current
     if (session === null || session.pointerId !== event.pointerId) return
@@ -600,6 +617,8 @@ export function LyricTrack() {
       const landedMs = Math.round(session.pressedStartMs + offsetPx / snapshot.pixelsPerMs)
       if (Math.abs(landedMs - session.pressedStartMs) < DRAG_MIN_DELTA_MS) return
       stampLine(session.pressedLineId, landedMs)
+      // 单块提交后把选中推进到下一可见行
+      selectNextVisibleLineAfterCommit(session.pressedLineId)
       return
     }
 
@@ -622,6 +641,8 @@ export function LyricTrack() {
     clearSessionStyles(session)
     // 单块 → 内部转 nudgeLine；多选 → 一条 selection-offset。共用同一口径
     moveLinesByOffset(session.moveLineIds, deltaMs)
+    // 仅单块提交把选中推进到下一可见行；多选提交不动选区
+    if (session.mode === 'single') selectNextVisibleLineAfterCommit(session.pressedLineId)
   }
 
   /** 取参与本次位移的行（行号 + 文本），供确认框展示。 */

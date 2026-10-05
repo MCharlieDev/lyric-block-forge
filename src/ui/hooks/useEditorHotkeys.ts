@@ -2,10 +2,13 @@ import { useEffect } from 'react'
 import { useAdapters } from '../context/AdapterContext'
 import {
   NUDGE_STEP_MS,
+  clearSelectionKeepCursor,
   moveSelection,
+  moveSelectionRange,
   nudgeSelection,
   removeSelectedLines,
   stampActiveLine,
+  toggleCursorSelection,
   togglePlayback,
 } from '../utils/editorCommands'
 
@@ -38,6 +41,10 @@ export const DEFAULT_HOTKEYS = {
   deleteSelection: 'Delete',
   /** 删除选中行（退格键别名，与 Delete 同义） */
   deleteSelectionAlt: 'Backspace',
+  /** 光标行加入 / 移出选区（`Ctrl/Cmd+Enter` 触发；纯 Enter 由行热区处理） */
+  toggleCursorSelection: 'Enter',
+  /** 清空行选区、光标不动（`Esc`） */
+  clearSelection: 'Escape',
 } as const
 
 /**
@@ -147,15 +154,43 @@ export function useEditorHotkeys(): void {
           return
         // 四个方向键命中后先让位给原生控件（滑块 / 下拉），
         // 见 defersDirectionsToNative 的理由；Space / E 不受此判断影响。
+        // ↑/↓ 再按修饰键分流：Ctrl/Cmd 只挪光标保选区、Shift 做范围选、
+        // 无修饰键为既有单选重置。
         case DEFAULT_HOTKEYS.prevLine:
           if (defersDirectionsToNative(active)) return
           event.preventDefault()
-          moveSelection(-1)
+          if (event.ctrlKey || event.metaKey) {
+            moveSelection(-1, { keepSelection: true })
+          } else if (event.shiftKey) {
+            moveSelectionRange(-1)
+          } else {
+            moveSelection(-1)
+          }
           return
         case DEFAULT_HOTKEYS.nextLine:
           if (defersDirectionsToNative(active)) return
           event.preventDefault()
-          moveSelection(1)
+          if (event.ctrlKey || event.metaKey) {
+            moveSelection(1, { keepSelection: true })
+          } else if (event.shiftKey) {
+            moveSelectionRange(1)
+          } else {
+            moveSelection(1)
+          }
+          return
+        // Ctrl/Cmd+Enter：光标行加入 / 移出选区（开关，可减到空）。
+        // 纯 Enter 必须放行 —— 行热区 onKeyDown 负责「选中该行」，
+        // 这里若 preventDefault 会把行内行为吃掉，故不命中修饰键时直接返回。
+        case DEFAULT_HOTKEYS.toggleCursorSelection:
+          if (!(event.ctrlKey || event.metaKey)) return
+          event.preventDefault()
+          toggleCursorSelection()
+          return
+        // Esc：清空行选区、光标不动。焦点在文本输入 / 弹窗打开时已在 switch
+        // 之前放行，故弹窗里的 Esc 仍由其自身处理。
+        case DEFAULT_HOTKEYS.clearSelection:
+          event.preventDefault()
+          clearSelectionKeepCursor()
           return
         case DEFAULT_HOTKEYS.nudgeBackward:
           if (defersDirectionsToNative(active)) return

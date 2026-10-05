@@ -339,6 +339,47 @@ export interface EditorState {
   /** 选择行 */
   selectLine: (lineId: string | null) => void
   /**
+   * Tab 导航专用：**清空选区、只留光标**。把 `activeLineId` 设为 `lineId`，
+   * 同时把 `lineIds` 清空（`[]`）。
+   *
+   * 与 {@link selectLine} 的区别：`selectLine` 把选区替换为「新行单选」，
+   * 本 action 则把选区清空 —— Tab 只负责挪光标，不留任何选中。
+   *
+   * `anchorLineId` 一并设为 `lineId`：选区已清空，锚点指向旧行无意义；
+   * 且鼠标来源已被列表 `onFocus` 的 `:focus-visible` 守卫挡住，不会误改锚点、
+   * 破坏 Shift 范围选。
+   *
+   * @param lineId 光标落点行 ID
+   */
+  setCursorOnly: (lineId: string) => void
+  /**
+   * 只挪光标、**保住选区**、重设锚点。
+   *
+   * 与 {@link setCursorOnly} 的唯一区别：本 action **不动 `lineIds`**
+   * （`setCursorOnly` 会把选区清空）。`anchorLineId` 跟到新光标行，
+   * 与鼠标 `Ctrl+点击`「一律重设锚点」的口径一致 —— 供 `Ctrl+↑/↓`
+   * 「挪光标 + 保选区」使用。
+   *
+   * `entryIds`（日志条目多选）不在本次语义内，原样保留。
+   *
+   * @param lineId 光标落点行 ID
+   */
+  setActiveLine: (lineId: string) => void
+  /**
+   * 光标行开关（`Ctrl+Enter`）：把**当前光标行**加入 / 移出选区。
+   *
+   * - `activeLineId === null` → 无操作；
+   * - 光标行已在 `lineIds` → 移出（**可为空**，`lineIds` 归 `[]`）；
+   * - 否则 → 加入。
+   *
+   * 两种情况都**不动 `activeLineId`**（光标停在原行），`anchorLineId`
+   * 跟到光标行。`entryIds` 原样保留。
+   *
+   * 与 {@link toggleLineSelection} 的区别：后者减选时会把 `activeLineId`
+   * 跳到剩余成员末项 / 清空，本 action 恒停在光标行。
+   */
+  toggleActiveLineSelection: () => void
+  /**
    * Ctrl(mac Cmd)+点击：切换一行的选中态。
    *
    * - 未选中 → 加入选中集，`activeLineId` 与锚点都跟随被点行；
@@ -1022,6 +1063,46 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         anchorLineId: lineId,
       },
     }),
+
+  setCursorOnly: (lineId) =>
+    set({
+      selection: {
+        ...get().selection,
+        // Tab 只挪光标：清空行选区（entryIds 是日志条目多选，不在本次语义内，原样保留）
+        lineIds: [],
+        activeLineId: lineId,
+        anchorLineId: lineId,
+      },
+    }),
+
+  setActiveLine: (lineId) =>
+    set({
+      selection: {
+        ...get().selection,
+        // 只挪光标：lineIds / entryIds 原样保留；锚点跟到新行（对齐 Ctrl+点击口径）
+        activeLineId: lineId,
+        anchorLineId: lineId,
+      },
+    }),
+
+  toggleActiveLineSelection: () => {
+    const { selection } = get()
+    const activeLineId = selection.activeLineId
+    // 无光标：没有可切换的目标行，直接返回
+    if (activeLineId === null) return
+    const inSelection = selection.lineIds.includes(activeLineId)
+    set({
+      selection: {
+        ...selection,
+        // 加 / 减都停在光标行；减到空即 `lineIds` 归 []
+        lineIds: inSelection
+          ? selection.lineIds.filter((id) => id !== activeLineId)
+          : [...selection.lineIds, activeLineId],
+        activeLineId,
+        anchorLineId: activeLineId,
+      },
+    })
+  },
 
   toggleLineSelection: (lineId) => {
     const { document, replay, selection } = get()

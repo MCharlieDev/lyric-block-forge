@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { getReplayedLineTimes, getReplayedWordTime } from '@core'
 import { useAdapters } from '../context/AdapterContext'
 import { useEditorStore } from '../stores/editorStore'
@@ -16,8 +16,8 @@ import { WHEEL_MULTIPLIER } from './constants'
 import { useTimelineViewportKernel, useViewportRef } from './useTimelineViewport'
 import { TimelineViewportContext } from './viewportContext'
 
-/** 内容时长的兜底下限：没有音频也没有歌词时，时间轴仍要有一段可缩放的空白。 */
-const MIN_DURATION_MS = 30_000
+/** 最小量程下限：仅作极短 / 空内容时的兜底，避免时间轴塌成一条线。 */
+const MIN_DURATION_MS = 5_000
 
 /** 时间轴尾部留白：让最后一个时间戳不至于贴死在右边界。 */
 const DURATION_TAIL_MS = 5_000
@@ -50,14 +50,17 @@ export function TimelineStrip() {
   const replay = useEditorStore((state) => state.replay)
   const audioDurationMs = useEditorStore((state) => state.audioAsset?.durationMs ?? 0)
 
-  // 根元素同时交给 ref 与内核：内核负责测量，ref 供滚轮监听取绑定目标
-  const setRootRef = useCallback(
-    (element: HTMLDivElement | null) => {
-      rootRef.current = element
-      attachViewport(element)
-    },
-    [attachViewport],
-  )
+  // ref 只记录根元素（滚轮监听等消费者依赖它）；内核绑定改由 layout effect 负责，
+  // 让 ResizeObserver 的生命周期归 effect 所有 —— 否则 StrictMode 双调用 effect 时
+  // destroy() 会拆掉 ref 回调里建的 observer，而 ref 回调不会重挂，观测者永久死亡。
+  const setRootRef = useCallback((element: HTMLDivElement | null) => {
+    rootRef.current = element
+  }, [])
+
+  useLayoutEffect(() => {
+    attachViewport(rootRef.current)
+    return () => attachViewport(null)
+  }, [attachViewport])
 
   // 时长 = 音频时长与全部时间戳（含字级）的最大值，再留一段尾巴
   const durationMs = useMemo(() => {
