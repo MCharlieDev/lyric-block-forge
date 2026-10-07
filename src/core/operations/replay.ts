@@ -208,6 +208,9 @@ function applyEntry(
     case 'absolute': {
       for (const value of delta.values) {
         if (value.wordIndex === null) {
+          // 行级时间戳不允许 null：行级清空走 clear-timestamps（见 OperationDelta 注释）。
+          // 忽略该值而非抛错 —— 与回放其余分支一致，保持纯函数不因单条脏记录中断整篇回放。
+          if (value.timeMs === null) continue
           const index = value.timestampIndex ?? 0
           const times = lineTimestamps[value.lineId] ?? []
           const next = [...times]
@@ -216,7 +219,13 @@ function applyEntry(
           next[index] = value.timeMs
           lineTimestamps[value.lineId] = next
         } else {
-          wordTimestamps[wordKey(value.lineId, value.wordIndex)] = value.timeMs
+          // 字级：null = 清空该字时间。回放层用"删除该字键"表达"该字无时间"——
+          // 基线已把所有存在的字键 seed 进来（见 buildBaselineFromDocument），
+          // 因此删键后 getReplayedWordTime 读不到值 → 返回 null。
+          // 切分（text / range）不在回放层，删键不影响它。
+          const key = wordKey(value.lineId, value.wordIndex)
+          if (value.timeMs === null) delete wordTimestamps[key]
+          else wordTimestamps[key] = value.timeMs
         }
       }
       break

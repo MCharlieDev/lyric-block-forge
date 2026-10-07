@@ -90,8 +90,17 @@ export interface AbsoluteTimestampValue {
    * 一行可以有多个行级时间戳（`[00:15.50][00:18.00]同一句`），用它定位具体是哪一个。
    */
   timestampIndex?: number
-  /** 目标时间值（毫秒） */
-  timeMs: number
+  /**
+   * 目标时间值（毫秒）；`null` 表示**清空该字时间**（仅字级合法）。
+   *
+   * 约束：`null` 只对字级（`wordIndex !== null`）合法，语义是「该字没有时间」——
+   * 回放时删除该字的字级键，`getReplayedWordTime` 随之返回 `null`，而字级的
+   * `text` / `range`（切分）不在回放层，因此切分保留。
+   * **行级（`wordIndex === null`）不允许 `null`**：行级清空走 `clear-timestamps`
+   * （它还要连带清该行全部字级时间并进 `clearedLineLines`，不是单键删除）。
+   * 该约束仅靠约定维持，类型层不强制（`undefined` 仍表示"无此字段"）。
+   */
+  timeMs: number | null
   /**
    * 目标字级对应的文本，仅用于日志展示（`wordIndex !== null` 时有意义）。
    *
