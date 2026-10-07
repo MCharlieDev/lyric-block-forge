@@ -382,14 +382,15 @@ function describeDelta(delta: OperationDelta): string {
     case 'absolute':
       return delta.values
         .map((value) => {
-          if (value.wordIndex === null) return `行 → ${formatTimecode(value.timeMs)}`
+          const shown = value.timeMs === null ? '清空时间戳' : formatTimecode(value.timeMs)
+          if (value.wordIndex === null) return `行 → ${shown}`
           // 字级记录优先显示词组文本（wordText 只用于展示，不参与回放）；
           // 老记录 / 其它来源没有这个字段，回退成"第 N 字"
           const target =
             value.wordText !== undefined && value.wordText !== ''
               ? `「${value.wordText}」`
               : `第 ${value.wordIndex + 1} 字`
-          return `${target} → ${formatTimecode(value.timeMs)}`
+          return `${target} → ${shown}`
         })
         .join('、')
     case 'clear-timestamps':

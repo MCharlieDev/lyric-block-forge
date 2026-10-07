@@ -1248,10 +1248,25 @@ export function buildExportText(
 
     const wordTimestamps =
       line.wordTimestamps.length > 0
-        ? line.wordTimestamps.map((word, index) => {
-            const replayed = getReplayedWordTime(replay, line.id, index)
-            return replayed === null ? word : { ...word, timeMs: replayed }
-          })
+        ? (() => {
+            // D4 链式向前继承：被清空的字（回放返回 null）沿用「前一个有效字」的时间；
+            // 链头（首字即被清）落该行行级时间戳（行级也没有时 → 跳过该字标签，
+            // 其文本仍由 serialize 的 range 切片输出，「省略条目」即等价于「只留文本」）。
+            const mapped: typeof line.wordTimestamps = []
+            let lastValid: number | null = lineTimes.length > 0 ? lineTimes[0] : null
+            for (let index = 0; index < line.wordTimestamps.length; index += 1) {
+              const word = line.wordTimestamps[index]
+              const replayed = getReplayedWordTime(replay, line.id, index)
+              if (replayed !== null) {
+                lastValid = replayed
+                mapped.push({ ...word, timeMs: replayed })
+              } else if (lastValid !== null) {
+                // 连续被清空的字继承同一个 lastValid，不清零
+                mapped.push({ ...word, timeMs: lastValid })
+              }
+            }
+            return mapped
+          })()
         : line.wordTimestamps
 
     if (timestamps === line.timestamps && wordTimestamps === line.wordTimestamps) return line
