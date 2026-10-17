@@ -144,12 +144,6 @@ export const MIN_BLOCK_WIDTH_PX = 40
 /** 相邻歌词块之间预留的横向间隔（像素），从块宽里扣掉。 */
 export const BLOCK_GAP_PX = 4
 
-/**
- * 同排相邻块的判定阈值（像素）：两个块的时间间隔小于它就视为"挤在一起"，
- * 后来的块挪到下一行。用像素而非毫秒，保证任何缩放下视觉间距都一致。
- */
-export const ROW_ASSIGN_GAP_PX = 8
-
 /** 字级 chip 最小宽度（像素）。 */
 export const WORD_CHIP_MIN_WIDTH_PX = 22
 

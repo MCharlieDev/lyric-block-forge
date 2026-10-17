@@ -15,10 +15,12 @@ import {
   LYRIC_ROW_COUNT,
   LYRIC_ROW_HEIGHT_PX,
   LYRIC_TRACK_HEIGHT_PX,
-  ROW_ASSIGN_GAP_PX,
   SNAP_PX,
 } from './constants'
-import { LyricBlock, lyricBlockWidthPx, type SelectModifiers } from './LyricBlock'
+import { LyricBlock, type SelectModifiers } from './LyricBlock'
+import { layoutBlock } from './blockLayout'
+import { measureLineWidths } from './textMeasure'
+import { formatTimecode } from '../utils/format'
 import { adaptiveGridMs } from './timeMap'
 import { lineIsMovable, selectVisibleLines, useEditorStore } from '../stores/editorStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -50,6 +52,8 @@ interface LaidOutRow {
   rowIndex: number
   /** 块左边缘（像素，轨道坐标） */
   startPx: number
+  /** 块宽（像素） */
+  widthPx: number
   /** 块右边缘（像素，轨道坐标） */
   endPx: number
 }
@@ -250,23 +254,55 @@ export function LyricTrack() {
   /**
    * 两行贪心分配：按起点遍历，找第一个"上一块已经让开"的行；
    * 两行都占着就退而求其次放到当前结束更早的那行（保证视觉上错开）。
-   * 判定用像素间距（{@link ROW_ASSIGN_GAP_PX}），因此任何缩放下视觉间隙都一致。
+   * 判定直接用像素边界（`上一块右边缘 <= 本块左边缘` 即允许同排），
+   * 块宽已由 {@link layoutBlock} 扣掉块间隙，所以这里不再额外留缝。
    */
   const laidOut = useMemo<LaidOutRow[]>(() => {
     const pixelsPerMs = snapshot.pixelsPerMs
     const lastEndPx: number[] = new Array<number>(LYRIC_ROW_COUNT).fill(Number.NEGATIVE_INFINITY)
     const rowIndexOf = new Array<number>(rows.length).fill(0)
+    const widthOf = new Array<number>(rows.length).fill(0)
 
     const ordered = rows
       .map((row, index) => ({ row, index }))
       .sort((a, b) => a.row.startMs - b.row.startMs || a.index - b.index)
 
+    // 一次反向扫描：对每个起点记录「严格大于它的下一个不同起点」
+    const nextStartByMs = new Map<number, number | null>()
+    let nextLarger: number | null = null
+    for (let cursor = ordered.length - 1; cursor >= 0; cursor -= 1) {
+      const currentMs = ordered[cursor].row.startMs
+      if (nextLarger === null || nextLarger > currentMs) {
+        nextStartByMs.set(currentMs, nextLarger)
+        nextLarger = currentMs
+      }
+    }
+
     for (const { row, index } of ordered) {
       const startPx = row.startMs * pixelsPerMs
-      const endPx = startPx + lyricBlockWidthPx(row.spanMs, pixelsPerMs)
+      const widths = measureLineWidths({
+        text: row.line.text,
+        translation: row.line.translation,
+        timecode: row.times.length > 0 ? formatTimecode(row.times[0]) : '--:--.--',
+        extraCount: Math.max(0, row.times.length - 1),
+        hasWords: row.line.wordTimestamps.length > 0,
+        hasTranslation: Boolean(row.line.translation),
+      })
+      const layout = layoutBlock({
+        bodyWidthPx: widths.bodyWidthPx,
+        infoRowWidthPx: widths.infoRowWidthPx,
+        translationWidthPx: widths.translationWidthPx,
+        wordRowWidthPx: null,
+        startMs: row.startMs,
+        nextStartMs: nextStartByMs.get(row.startMs) ?? null,
+        pixelsPerMs,
+      })
+      widthOf[index] = layout.widthPx
+      const endPx = startPx + layout.widthPx
+
       let target = -1
       for (let candidate = 0; candidate < LYRIC_ROW_COUNT; candidate += 1) {
-        if (lastEndPx[candidate] + ROW_ASSIGN_GAP_PX <= startPx) {
+        if (lastEndPx[candidate] <= startPx) {
           target = candidate
           break
         }
@@ -287,7 +323,8 @@ export function LyricTrack() {
         row,
         rowIndex: rowIndexOf[index],
         startPx,
-        endPx: startPx + lyricBlockWidthPx(row.spanMs, pixelsPerMs),
+        widthPx: widthOf[index],
+        endPx: startPx + widthOf[index],
       }
     })
   }, [rows, snapshot.pixelsPerMs])
@@ -734,6 +771,7 @@ export function LyricTrack() {
             isActive={item.row.line.id === activeLineId}
             inSelection={selectedLineIdSet.has(item.row.line.id)}
             pixelsPerMs={snapshot.pixelsPerMs}
+            widthPx={item.widthPx}
             topPx={item.rowIndex * LYRIC_ROW_HEIGHT_PX}
           />
         ))}

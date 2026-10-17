@@ -1,11 +1,5 @@
 import type { LyricLine } from '@core'
-import {
-  BLOCK_GAP_PX,
-  DEFAULT_BLOCK_MS,
-  LYRIC_ROW_HEIGHT_PX,
-  MIN_BLOCK_WIDTH_PX,
-  WORD_CHIP_MIN_WIDTH_PX,
-} from './constants'
+import { LYRIC_ROW_HEIGHT_PX, WORD_CHIP_MIN_WIDTH_PX } from './constants'
 import { formatTimecode } from '../utils/format'
 
 /** 点选歌词块时按下的修饰键。由轨道从 PointerEvent 上取，交回选择语义分派。 */
@@ -35,6 +29,8 @@ interface LyricBlockProps {
   inSelection: boolean
   /** 当前缩放 */
   pixelsPerMs: number
+  /** 块宽（像素），由轨道按内容宽与下一行间距算好 */
+  widthPx: number
   /**
    * 块相对**歌词轨道**的纵向偏移（像素）。
    * 由轨道按行号算出（`行号 × 行距`），块自己不推算行位置。
@@ -44,17 +40,6 @@ interface LyricBlockProps {
 
 /** 块相对行顶部的内缩，避免块与行的底纹贴边。 */
 const BLOCK_INSET_PX = 2
-
-/**
- * 歌词块宽度：`时长 × 缩放`，并从块宽里扣掉与相邻块的间隙。
- * 过长的块按 {@link DEFAULT_BLOCK_MS} 截断（避免一句长尾把整条轨道占满），
- * 过窄的块抬到 {@link MIN_BLOCK_WIDTH_PX}（保证仍可点中、可拖动）。
- *
- * 轨道用它做两行贪心分配，块用它写 `width`，两边共用同一份换算以保证像素对齐。
- */
-export function lyricBlockWidthPx(spanMs: number, pixelsPerMs: number): number {
-  return Math.max(MIN_BLOCK_WIDTH_PX, Math.min(spanMs, DEFAULT_BLOCK_MS) * pixelsPerMs - BLOCK_GAP_PX)
-}
 
 /**
  * 单个歌词块（纯展示，不含任何交互状态）。
@@ -87,9 +72,9 @@ export function LyricBlock({
   isActive,
   inSelection,
   pixelsPerMs,
+  widthPx,
   topPx,
 }: LyricBlockProps) {
-  const widthPx = lyricBlockWidthPx(spanMs, pixelsPerMs)
   const hasWords = line.wordTimestamps.length > 0
   const extraCount = times.length > 1 ? times.length - 1 : 0
 
