@@ -23,6 +23,6 @@ export default defineConfig({
     open: false,
     // 无头浏览器截图会在这个目录里写 Chrome 用户数据，被 Vite 的 watcher
     // 盯上后会抛 EBUSY 把 dev server 打崩，直接忽略掉。
-    watch: { ignored: ['**/.tmp-shot/**'] },
+    watch: { ignored: ['**/.tmp-shot/**', '**/harness/.tmp/**'] },
   },
 })

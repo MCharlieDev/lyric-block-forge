@@ -6,8 +6,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const PORT = 9333
-const APP = 'http://localhost:5177/'
+const PORT = Number(process.env.LRC_CDP_PORT ?? 9333)
+const APP = `http://localhost:${process.env.LRC_DEV_PORT ?? 5177}/`
 const MOD = { alt: 1, ctrl: 2, meta: 4, shift: 8 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
