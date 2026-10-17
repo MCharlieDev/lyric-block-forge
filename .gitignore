@@ -18,3 +18,5 @@ pending_delivery/
 harness/.tmp/
 # endtail 探针生成的静音 wav（运行时产物，脚本相对路径落此处）
 harness/silence-60s.wav
+.trae/
+.context/
