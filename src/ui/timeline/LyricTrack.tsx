@@ -259,6 +259,7 @@ export function LyricTrack() {
    */
   const laidOut = useMemo<LaidOutRow[]>(() => {
     const pixelsPerMs = snapshot.pixelsPerMs
+    const durationMs = snapshot.durationMs
     const lastEndPx: number[] = new Array<number>(LYRIC_ROW_COUNT).fill(Number.NEGATIVE_INFINITY)
     const rowIndexOf = new Array<number>(rows.length).fill(0)
     const widthOf = new Array<number>(rows.length).fill(0)
@@ -294,7 +295,9 @@ export function LyricTrack() {
         translationWidthPx: widths.translationWidthPx,
         wordRowWidthPx: null,
         startMs: row.startMs,
-        nextStartMs: nextStartByMs.get(row.startMs) ?? null,
+        // 没有下一行时，用时间轴总长当虚拟右边界；起点已在总长之外则不限宽
+        nextStartMs:
+          nextStartByMs.get(row.startMs) ?? (row.startMs < durationMs ? durationMs : null),
         pixelsPerMs,
       })
       widthOf[index] = layout.widthPx
@@ -327,7 +330,7 @@ export function LyricTrack() {
         endPx: startPx + widthOf[index],
       }
     })
-  }, [rows, snapshot.pixelsPerMs])
+  }, [rows, snapshot.pixelsPerMs, snapshot.durationMs])
 
   // 横向虚拟滚动：只保留与渲染窗口相交的块
   const windowStartPx = snapshot.windowStartMs * snapshot.pixelsPerMs
