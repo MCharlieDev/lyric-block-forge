@@ -1,5 +1,11 @@
 import { create } from 'zustand'
-import type { BilingualLanguage, BilingualMergeOptions, ParseOptions } from '@core'
+import {
+  DEFAULT_METADATA_PREFIX_RULES,
+  type BilingualLanguage,
+  type BilingualMergeOptions,
+  type MetadataPrefixRule,
+  type ParseOptions,
+} from '@core'
 
 /** 设置持久化所用的存储键（StoragePort）。 */
 export const SETTINGS_STORAGE_KEY = 'lrc-editor/settings'
@@ -61,12 +67,26 @@ export interface AppSettings {
    */
   metadataPrefixMode: 'off' | 'meta' | 'meta+line'
   /**
+   * 元数据前缀规则表（整表替换内核默认表）。
+   *
+   * 非法条目在 `normalizeMetadataPrefixRules` 中丢弃；空数组表示「不识别任何前缀」，
+   * 不会回退默认表。
+   */
+  metadataPrefixRules: MetadataPrefixRule[]
+  /**
    * 行操作弹窗是否支持"点击遮罩关闭"。
    *
    * 默认关闭：误触遮罩会丢掉弹窗里正在编辑的内容，代价太高；
    * 想要这条捷径的用户可在设置里主动开启。
    */
   closeDialogOnBackdropClick: boolean
+  /**
+   * 元数据前缀规则弹窗是否支持"点击遮罩关闭"。
+   *
+   * 与 `closeDialogOnBackdropClick` 相互独立：前缀弹窗是独立模态，
+   * 误触遮罩丢掉正在输入字段的代价同样高，故默认关闭。
+   */
+  closeMetadataPrefixDialogOnBackdropClick: boolean
   /**
    * 导出时统一使用的行级 / 字级时间戳精度（毫秒）。
    *
@@ -111,6 +131,47 @@ export interface AppSettings {
   snapToGrid: boolean
 }
 
+/** 前缀与值之间的合法分隔符：中文冒号 / 英文冒号 / 半角空格 / Tab。 */
+const METADATA_PREFIX_SEPARATORS = '：: \t'
+/** 合法标签名：导出写回 `[tag:value]`，而导入只识别字母标签，故限制为纯字母。 */
+const METADATA_TAG_PATTERN = /^[a-zA-Z]+$/
+
+/** 克隆一份默认前缀规则表，避免与 `DEFAULT_SETTINGS` 共享数组或条目引用。 */
+function cloneDefaultMetadataPrefixRules(): MetadataPrefixRule[] {
+  return DEFAULT_METADATA_PREFIX_RULES.map((rule) => ({ ...rule }))
+}
+
+/**
+ * 规范化持久化读回的前缀规则表。
+ *
+ * 非数组回退默认表 clone；数组逐条校验，非法条目静默丢弃。
+ * 空数组保持 `[]`（用户可能主动删光规则），不回退默认。
+ *
+ * @param value 存储中读到的原始值
+ * @returns 合法规则表
+ */
+function normalizeMetadataPrefixRules(value: unknown): MetadataPrefixRule[] {
+  if (!Array.isArray(value)) return cloneDefaultMetadataPrefixRules()
+
+  const rules: MetadataPrefixRule[] = []
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) continue
+    const record = item as Record<string, unknown>
+    const prefix = typeof record.prefix === 'string' ? record.prefix.trim() : ''
+    const tag = typeof record.tag === 'string' ? record.tag.trim() : ''
+    if (prefix === '' || tag === '') continue
+    if (!METADATA_TAG_PATTERN.test(tag)) continue
+    if (Array.from(prefix).some((char) => METADATA_PREFIX_SEPARATORS.includes(char))) continue
+    rules.push({ prefix, tag, action: record.action === 'line' ? 'line' : 'meta' })
+  }
+  return rules
+}
+
+/** 生成一份全新的默认设置（前缀规则表为独立 clone）。 */
+function createDefaultSettings(): AppSettings {
+  return { ...DEFAULT_SETTINGS, metadataPrefixRules: cloneDefaultMetadataPrefixRules() }
+}
+
 /** 默认预设。 */
 export const DEFAULT_SETTINGS: AppSettings = {
   bilingualEnabled: true,
@@ -118,7 +179,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   primaryLanguage: 'auto',
   mergeToleranceMs: 0,
   metadataPrefixMode: 'off',
+  metadataPrefixRules: cloneDefaultMetadataPrefixRules(),
   closeDialogOnBackdropClick: false,
+  closeMetadataPrefixDialogOnBackdropClick: false,
   timestampPrecisionMs: 1,
   confirmMajorChange: true,
   followResumeMode: 'snap',
@@ -140,7 +203,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
  * @returns 合法设置
  */
 function normalizeSettings(stored: unknown): AppSettings {
-  if (typeof stored !== 'object' || stored === null) return DEFAULT_SETTINGS
+  if (typeof stored !== 'object' || stored === null) return createDefaultSettings()
   const record = stored as Record<string, unknown>
 
   const language = record.primaryLanguage
@@ -167,11 +230,16 @@ function normalizeSettings(stored: unknown): AppSettings {
         : record.metadataPrefixEnabled === true
           ? 'meta'
           : 'off',
+    metadataPrefixRules: normalizeMetadataPrefixRules(record.metadataPrefixRules),
     // 本函数是白名单：新增设置项必须在这里补一条，否则刷新后会被静默丢回默认值
     closeDialogOnBackdropClick:
       typeof record.closeDialogOnBackdropClick === 'boolean'
         ? record.closeDialogOnBackdropClick
         : DEFAULT_SETTINGS.closeDialogOnBackdropClick,
+    closeMetadataPrefixDialogOnBackdropClick:
+      typeof record.closeMetadataPrefixDialogOnBackdropClick === 'boolean'
+        ? record.closeMetadataPrefixDialogOnBackdropClick
+        : DEFAULT_SETTINGS.closeMetadataPrefixDialogOnBackdropClick,
     timestampPrecisionMs:
       record.timestampPrecisionMs === 10 || record.timestampPrecisionMs === 1
         ? record.timestampPrecisionMs
@@ -224,11 +292,11 @@ export function toMetadataPrefixOptions(
 ): NonNullable<ParseOptions['metadataPrefix']> {
   switch (settings.metadataPrefixMode) {
     case 'meta':
-      return { enabled: true, keepLyricLine: false }
+      return { enabled: true, keepLyricLine: false, rules: settings.metadataPrefixRules }
     case 'meta+line':
-      return { enabled: true, keepLyricLine: true }
+      return { enabled: true, keepLyricLine: true, rules: settings.metadataPrefixRules }
     default:
-      return { enabled: false, keepLyricLine: false }
+      return { enabled: false, keepLyricLine: false, rules: settings.metadataPrefixRules }
   }
 }
 
@@ -247,12 +315,12 @@ export interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>()((set, get) => ({
-  settings: DEFAULT_SETTINGS,
+  settings: createDefaultSettings(),
   hydrated: false,
 
   hydrate: (stored) => set({ settings: normalizeSettings(stored), hydrated: true }),
 
   update: (patch) => set({ settings: { ...get().settings, ...patch } }),
 
-  reset: () => set({ settings: DEFAULT_SETTINGS }),
+  reset: () => set({ settings: createDefaultSettings() }),
 }))

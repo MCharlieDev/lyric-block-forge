@@ -1273,7 +1273,43 @@ export function buildExportText(
     return { ...line, timestamps, wordTimestamps }
   })
 
-  return serializeLrc({ ...document, lines }, { uniformPrecisionMs })
+  // 导出顺延：beforeLine 的锚点行可能已被删除（不在可见行集合里）。
+  // 此时把该批空行顺延到文档顺序中向下的第一个可见行；无则并入 trailing。
+  // core 的 serializeLrc 仍保留「锚点不存在即丢弃」的降级契约，清洗只在导出层做。
+  const blankLines = document.format.blankLines
+  let format = document.format
+  if (blankLines?.beforeLine !== undefined) {
+    const visibleIds = new Set(lines.map((line) => line.id))
+    const normalizedBeforeLine: Record<string, string[]> = {}
+    const orphanTrailing: string[] = []
+    for (const [id, blanks] of Object.entries(blankLines.beforeLine)) {
+      let targetId: string | undefined = visibleIds.has(id) ? id : undefined
+      if (targetId === undefined) {
+        const anchorIndex = document.lines.findIndex((line) => line.id === id)
+        for (let index = anchorIndex + 1; anchorIndex >= 0 && index < document.lines.length; index += 1) {
+          const candidate = document.lines[index]
+          if (visibleIds.has(candidate.id)) {
+            targetId = candidate.id
+            break
+          }
+        }
+      }
+      if (targetId === undefined) orphanTrailing.push(...blanks)
+      else (normalizedBeforeLine[targetId] ??= []).push(...blanks)
+    }
+    // 顺延落空（锚点在末尾）的空行排在真实 trailing 之前，保持源顺序。
+    const normalizedTrailing = [...orphanTrailing, ...(blankLines.trailing ?? [])]
+    format = {
+      ...document.format,
+      blankLines: {
+        ...(blankLines.leading !== undefined ? { leading: blankLines.leading } : {}),
+        ...(Object.keys(normalizedBeforeLine).length > 0 ? { beforeLine: normalizedBeforeLine } : {}),
+        ...(normalizedTrailing.length > 0 ? { trailing: normalizedTrailing } : {}),
+      },
+    }
+  }
+
+  return serializeLrc({ ...document, format, lines }, { uniformPrecisionMs })
 }
 
 /**

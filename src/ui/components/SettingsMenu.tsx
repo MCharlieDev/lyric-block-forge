@@ -5,6 +5,7 @@ import {
   useSettingsStore,
   type AppSettings,
 } from '../stores/settingsStore'
+import { MetadataPrefixDialog } from './MetadataPrefixDialog'
 
 /** 表单项统一样式。 */
 const fieldClass =
@@ -20,6 +21,8 @@ const SETTINGS_PANEL_HEIGHT_PX = 420
 interface ControlCtx {
   settings: AppSettings
   update: (patch: Partial<AppSettings>) => void
+  /** 打开元数据前缀规则编辑弹窗 */
+  openPrefixDialog: () => void
 }
 
 /** 一项设置：`label` / `keywords` 供搜索匹配，`control` 负责完整渲染该行。 */
@@ -129,24 +132,34 @@ const SECTIONS: SettingsSection[] = [
         id: 'metadataPrefixMode',
         label: '识别歌词前的介绍行（如「作词：张三」）',
         keywords: '元数据 前缀 作词 作曲 介绍行 识别 保留',
-        control: ({ settings, update }) => (
-          <label className={labelClass}>
-            识别歌词前的介绍行（如「作词：张三」）
-            <select
-              value={settings.metadataPrefixMode}
-              onChange={(event) => {
-                const value = event.target.value
-                update({
-                  metadataPrefixMode: value === 'meta' || value === 'meta+line' ? value : 'off',
-                })
-              }}
-              className={fieldClass}
+        control: ({ settings, update, openPrefixDialog }) => (
+          <div className="flex flex-col gap-1">
+            <label className={labelClass}>
+              识别歌词前的介绍行（如「作词：张三」）
+              <select
+                value={settings.metadataPrefixMode}
+                onChange={(event) => {
+                  const value = event.target.value
+                  update({
+                    metadataPrefixMode: value === 'meta' || value === 'meta+line' ? value : 'off',
+                  })
+                }}
+                className={fieldClass}
+              >
+                <option value="off">关</option>
+                <option value="meta">仅元数据</option>
+                <option value="meta+line">元数据 + 保留歌词行</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              data-prefix-rules-trigger
+              onClick={openPrefixDialog}
+              className="self-start rounded border border-divider px-2 py-0.5 text-[11px] text-neutral-300 hover:border-accent/60 hover:text-accent"
             >
-              <option value="off">关</option>
-              <option value="meta">仅元数据</option>
-              <option value="meta+line">元数据 + 保留歌词行</option>
-            </select>
-          </label>
+              配置前缀规则…
+            </button>
+          </div>
         ),
       },
     ],
@@ -161,15 +174,28 @@ const SECTIONS: SettingsSection[] = [
         label: '点击遮罩关闭行操作弹窗',
         keywords: '遮罩 弹窗 关闭',
         control: ({ settings, update }) => (
-          <label className={checkboxRowClass}>
-            <input
-              type="checkbox"
-              checked={settings.closeDialogOnBackdropClick}
-              onChange={(event) => update({ closeDialogOnBackdropClick: event.target.checked })}
-              className="accent-accent"
-            />
-            点击遮罩关闭行操作弹窗
-          </label>
+          <div className="flex flex-col gap-1">
+            <label className={checkboxRowClass}>
+              <input
+                type="checkbox"
+                checked={settings.closeDialogOnBackdropClick}
+                onChange={(event) => update({ closeDialogOnBackdropClick: event.target.checked })}
+                className="accent-accent"
+              />
+              点击遮罩关闭行操作弹窗
+            </label>
+            <label className={checkboxRowClass}>
+              <input
+                type="checkbox"
+                checked={settings.closeMetadataPrefixDialogOnBackdropClick}
+                onChange={(event) =>
+                  update({ closeMetadataPrefixDialogOnBackdropClick: event.target.checked })
+                }
+                className="accent-accent"
+              />
+              点击遮罩关闭前缀规则弹窗
+            </label>
+          </div>
         ),
       },
       {
@@ -374,6 +400,7 @@ export function SettingsMenu() {
   const reset = useSettingsStore((state) => state.reset)
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [prefixDialogOpen, setPrefixDialogOpen] = useState(false)
 
   const q = query.trim().toLowerCase()
   // 搜索过滤：段标题命中则整段保留，否则按「项标签 + 关键词」逐项过滤；空段跳过
@@ -386,7 +413,11 @@ export function SettingsMenu() {
     return { ...section, items }
   }).filter((section) => section.items.length > 0)
 
-  const ctx: ControlCtx = { settings, update }
+  const ctx: ControlCtx = {
+    settings,
+    update,
+    openPrefixDialog: () => setPrefixDialogOpen(true),
+  }
 
   return (
     <div className="relative">
@@ -466,6 +497,15 @@ export function SettingsMenu() {
             </div>
           </div>
         </>
+      ) : null}
+
+      {prefixDialogOpen ? (
+        <MetadataPrefixDialog
+          rules={settings.metadataPrefixRules}
+          onChange={(rules) => update({ metadataPrefixRules: rules })}
+          closeOnBackdropClick={settings.closeMetadataPrefixDialogOnBackdropClick}
+          onClose={() => setPrefixDialogOpen(false)}
+        />
       ) : null}
     </div>
   )

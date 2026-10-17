@@ -18,7 +18,8 @@
  *   V1 重复标准标签：由 `format.metadataTags` 记录名值序列并逐字写回。
  *   V2 重复自定义标签：同上（自定义值取自 `meta.custom`）。
  *   V3 空行：由 `format.blankLines` 以行 ID 锚定、原文存储并写回（空行不进 lines）。
- *      元数据块内部（两条元数据行之间）的空行仍不承载，属已知有损缺口。
+ *      元数据块内部的空行现由「模块内部空行 → 首条内容行 beforeLine」承载，
+ *      位置归一到元数据块之后（非 block 内部逐字原位）；双语合并 / 删除锚点由顺延承接。
  *   V5 多标签行顺序：由 `format.metadataTags` 记录并写回原始顺序。
  *   V6 元数据跨行合并：由 `format.metadataTags` 记录原始分行并逐行写回。
  *
@@ -31,7 +32,16 @@
  */
 
 import { describe, expect, test } from 'vitest'
-import { createLyricDocument, parseLrc, serializeLrc, type ParseOptions } from '@core'
+import {
+  buildBaselineFromDocument,
+  createLyricDocument,
+  createOperationLog,
+  parseLrc,
+  replayOperations,
+  serializeLrc,
+  type ParseOptions,
+} from '@core'
+import { buildExportText } from '../../src/ui/stores/editorStore'
 
 /** 关闭识别器，隔离「序列化保真」本身，避免双语识别介入影响断言。 */
 const RAW: ParseOptions = { applyRecognizers: false }
@@ -264,6 +274,33 @@ describe('空行保真（additive 字段 blankLines）', () => {
     const withoutB = { ...doc, lines: doc.lines.filter((line) => line.text !== 'b') }
     expect(serializeLrc(withoutB)).toBe('[00:01.00]a\n')
   })
+
+  test('元数据块内部空行：解析保留，序列化写到元数据块之后（位置归一）', () => {
+    const src = '[ti:a]\n\n[ar:b]\n[00:01.00]x\n'
+    const doc = parseOk(src, RAW)
+    // 元数据块内部的空行不丢：落在首条内容行之前（block 内部原位无法逐字还原）。
+    expect(doc.format.blankLines?.beforeLine?.[doc.lines[0].id]).toEqual([''])
+    expect(serializeLrc(doc)).toBe('[ti:a]\n[ar:b]\n\n[00:01.00]x\n')
+  })
+
+  test('双语合并跨空行：空行顺延到合并后的存活行', () => {
+    const src = '[00:01.00]中文\n\n[00:01.00]English\n'
+    const doc = parseOk(src)
+    expect(doc.lines).toHaveLength(1)
+    expect(doc.lines[0].translation).toBe('English')
+    // 被动行 id 被吞噬，空行顺延挂到合并后的存活行上。
+    expect(doc.format.blankLines?.beforeLine?.[doc.lines[0].id]).toEqual([''])
+    expect(serializeLrc(doc)).toBe('\n[00:01.00]中文\n[00:01.00]English\n')
+  })
+
+  test('导出顺延：锚点行被删除后，空行顺延给下一可见行', () => {
+    const src = '[00:01.00]a\n\n[00:02.00]b\n[00:03.00]c\n'
+    const doc = parseOk(src, RAW)
+    // 删除在回放层表达（document.lines 是基线，仍保留 b）。
+    const replay = replayOperations(createOperationLog('doc_1'), buildBaselineFromDocument(doc))
+    const removed = { ...replay, removedLineIds: new Set([doc.lines[1].id]) }
+    expect(buildExportText(doc, removed, 10)).toBe('[00:01.00]a\n\n[00:03.00]c\n')
+  })
 })
 
 describe('元数据前缀识别', () => {
@@ -424,5 +461,94 @@ describe('元数据前缀识别', () => {
     expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三', 'x'])
     expect(doc.lines[0].timestamps).toEqual([])
     expect(serializeLrc(doc)).toBe(src)
+  })
+
+  describe('可配置前缀表：自定义映射', () => {
+    test('r. 自定义前缀映射到标准字段并导出标准标签', () => {
+      const src = '词：李四\n[00:01.00]x\n'
+      const doc = parseOk(src, { metadataPrefix: { enabled: true, rules: [{ prefix: '词', tag: 'lyricist' }] } })
+      expect(doc.meta.lyricist).toBe('李四')
+      expect(doc.lines.map((line) => line.text)).toEqual(['x'])
+      expect(serializeLrc(doc)).toBe('[lyricist:李四]\n[00:01.00]x\n')
+    })
+
+    test('s. 自定义标签进 meta.custom 与 unknownTags', () => {
+      const src = '厂牌：华纳\n[00:01.00]x\n'
+      const doc = parseOk(src, { metadataPrefix: { enabled: true, rules: [{ prefix: '厂牌', tag: 'label' }] } })
+      expect(doc.meta.custom?.label).toBe('华纳')
+      expect(doc.format.unknownTags).toEqual(['label'])
+      expect(serializeLrc(doc)).toBe('[label:华纳]\n[00:01.00]x\n')
+    })
+
+    test('t. 传入 rules 即整表替换：空数组使默认前缀失效', () => {
+      const src = '作词：张三\n[00:01.00]x\n'
+      const doc = parseOk(src, { metadataPrefix: { enabled: true, rules: [] } })
+      expect(doc.meta.lyricist).toBeUndefined()
+      expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三', 'x'])
+      expect(serializeLrc(doc)).toBe(src)
+    })
+
+    test('u. 重复 prefix 先到先得', () => {
+      const src = '作词：张三\n[00:01.00]x\n'
+      const doc = parseOk(src, {
+        metadataPrefix: {
+          enabled: true,
+          rules: [
+            { prefix: '作词', tag: 'lyricist' },
+            { prefix: '作词', tag: 'composer' },
+          ],
+        },
+      })
+      expect(doc.meta.lyricist).toBe('张三')
+      expect(doc.meta.composer).toBeUndefined()
+    })
+  })
+
+  describe('可配置前缀表：action 与边界', () => {
+    test("v. action:'line' 保留歌词行、不写元数据、无视全局 keepLyricLine", () => {
+      const src = '作词：张三\n[00:01.00]x\n'
+      const doc = parseOk(src, {
+        metadataPrefix: {
+          enabled: true,
+          keepLyricLine: true,
+          rules: [{ prefix: '作词', tag: 'lyricist', action: 'line' }],
+        },
+      })
+      expect(doc.meta.lyricist).toBeUndefined()
+      expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三', 'x'])
+      expect(doc.lines[0].timestamps).toEqual([])
+      expect(serializeLrc(doc)).toBe(src)
+    })
+
+    test('w. 非法规则静默跳过：prefix 含分隔符 / tag 为空', () => {
+      const src = '作词：张三\n作曲：李四\n[00:01.00]x\n'
+      const doc = parseOk(src, {
+        metadataPrefix: {
+          enabled: true,
+          rules: [
+            { prefix: '作词：', tag: 'lyricist' },
+            { prefix: '作曲', tag: '' },
+          ],
+        },
+      })
+      expect(doc.meta.lyricist).toBeUndefined()
+      expect(doc.meta.composer).toBeUndefined()
+      expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三', '作曲：李四', 'x'])
+    })
+
+    test('x. 规则生效窗口：第 11 行与首条时间戳行之后不识别', () => {
+      const rules = [{ prefix: '作词', tag: 'lyricist' }]
+      const late = parseOk('a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n作词：张三\n[00:01.00]x\n', {
+        metadataPrefix: { enabled: true, rules },
+      })
+      expect(late.meta.lyricist).toBeUndefined()
+      expect(late.lines.filter((line) => line.text === '作词：张三')).toHaveLength(1)
+
+      const afterTimestamp = parseOk('[00:01.00]x\n作词：张三\n[00:02.00]y\n', {
+        metadataPrefix: { enabled: true, rules },
+      })
+      expect(afterTimestamp.meta.lyricist).toBeUndefined()
+      expect(afterTimestamp.lines.filter((line) => line.text === '作词：张三')).toHaveLength(1)
+    })
   })
 })

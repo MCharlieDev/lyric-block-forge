@@ -28,8 +28,15 @@ export interface ParseOptions {
    * `keepLyricLine` 仅在 `enabled === true` 时被读取（否则无意义），默认 `false`
    * 即保持现状：识别行只转元数据、不进歌词行。置 `true` 则额外保留一条普通歌词行
    * （文本为原行，行级时间戳 `00:00.000`），兜底给不认元数据标签的播放器显示。
+   *
+   * `rules` 缺省时使用 {@link DEFAULT_METADATA_PREFIX_RULES}；一旦传入即**完全替换**
+   * 默认表（空数组表示全部不识别），调用方需自行合并默认表。
    */
-  metadataPrefix?: { enabled?: boolean; keepLyricLine?: boolean }
+  metadataPrefix?: {
+    enabled?: boolean
+    keepLyricLine?: boolean
+    rules?: MetadataPrefixRule[]
+  }
 }
 
 /**
@@ -62,13 +69,29 @@ const META_TAG_PATTERN = /\[([a-zA-Z]+):([^\]]*)\]/g
 const METADATA_PREFIX_MAX_LINES = 10
 
 /**
+ * 一条元数据前缀规则。
+ *
+ * - `prefix`：行首精确匹配的前缀（如「作词」）；
+ * - `tag`：写入 `applyMetaTag` 的标签名（标准标签名如 `lyricist`，或自定义键）；
+ * - `action`：命中后的处理方式，缺省 `'meta'`。`'line'` 表示绝不转元数据，
+ *   始终按普通歌词行保留（优先于全局 `keepLyricLine`）。
+ */
+export interface MetadataPrefixRule {
+  prefix: string
+  tag: string
+  action?: 'meta' | 'line'
+}
+
+/**
  * 默认元数据前缀表：行首中文前缀 → 标签名。
  *
  * `tag` 用的是「标签名」而非字段名，与 `applyMetaTag` 的 `case` 同名
  * （故「演唱」对应 `ar` 而不是 `artist`）；不在标准 `case` 内的走 default →
  * `meta.custom` 并登记 `unknownTags`。
+ *
+ * 调用方传入 `rules` 时整表替换，不与此默认表合并。
  */
-const METADATA_PREFIX_TABLE: ReadonlyArray<{ prefix: string; tag: string }> = [
+export const DEFAULT_METADATA_PREFIX_RULES: MetadataPrefixRule[] = [
   { prefix: '作词', tag: 'lyricist' },
   { prefix: '作曲', tag: 'composer' },
   { prefix: '演唱', tag: 'ar' },
@@ -118,21 +141,43 @@ function extractMetadataTags(line: string): Array<{ name: string; value: string 
 }
 
 /**
+ * 判断一条前缀规则是否可用于匹配。
+ *
+ * 非法规则（空 `prefix` / 空 `tag` / `prefix` 含分隔符）在匹配时静默跳过，
+ * 不抛异常，避免脏配置让整次导入失败。
+ *
+ * @param rule 前缀规则
+ * @returns 可用于匹配时为 `true`
+ */
+function isValidMetadataPrefixRule(rule: MetadataPrefixRule): boolean {
+  if (rule.prefix.trim() === '' || rule.tag.trim() === '') return false
+  return !Array.from(rule.prefix).some((char) => METADATA_PREFIX_SEPARATORS.includes(char))
+}
+
+/**
  * 识别一行是否为「元数据前缀介绍行」（如 `作词：张三`）。
  *
  * 前缀须锚定行首且后紧邻一个合法分隔符（避免「作词人：X」误命中「作词」）；
- * 值两端 trim 后非空才算命中。
+ * 值两端 trim 后非空才算命中。多条规则命中同一行时先到先得；非法规则跳过。
  *
  * @param line 原始行（未 trim）
- * @returns 命中的标签名与值；未命中为 `null`
+ * @param rules 前缀规则表（调用方已决定是否使用默认表）
+ * @returns 命中的标签名、值与处理方式；未命中为 `null`
  */
-function matchMetadataPrefix(line: string): { tag: string; value: string } | null {
-  const entry = METADATA_PREFIX_TABLE.find((item) => line.startsWith(item.prefix))
-  if (entry === undefined) return null
-  const separator = line.charAt(entry.prefix.length)
-  if (separator === '' || !METADATA_PREFIX_SEPARATORS.includes(separator)) return null
-  const value = line.slice(entry.prefix.length + 1).trim()
-  return value === '' ? null : { tag: entry.tag, value }
+function matchMetadataPrefix(
+  line: string,
+  rules: readonly MetadataPrefixRule[],
+): { tag: string; value: string; action: 'meta' | 'line' } | null {
+  for (const rule of rules) {
+    if (!isValidMetadataPrefixRule(rule)) continue
+    if (!line.startsWith(rule.prefix)) continue
+    const separator = line.charAt(rule.prefix.length)
+    if (separator === '' || !METADATA_PREFIX_SEPARATORS.includes(separator)) continue
+    const value = line.slice(rule.prefix.length + 1).trim()
+    if (value === '') continue
+    return { tag: rule.tag, value, action: rule.action === 'line' ? 'line' : 'meta' }
+  }
+  return null
 }
 
 /**
@@ -313,14 +358,15 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
 
   /**
    * 元数据行（含识别出的前缀行）落盘前的空行游标处理：
-   * 首行前的空行归 `leading`，块内空行丢弃（既有已知有损缺口）。
+   * 首行前的空行归 `leading`；元数据块内部的空行不再丢弃，留在
+   * `pendingBlanks` 中，随下一条可见内容行归位到其 `beforeLine`。
    */
   const flushBlanksForMetaRow = (): void => {
     if (!sawAnyLine) {
       leadingBlanks.push(...pendingBlanks)
+      pendingBlanks = []
       sawAnyLine = true
     }
-    pendingBlanks = []
   }
 
   let text = source
@@ -359,6 +405,8 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
   const applyRecognizers = options.applyRecognizers ?? true
   /** 元数据前缀识别：总闸门开 且 该识别被显式开启（默认关）。 */
   const recognizeMetadataPrefix = applyRecognizers && options.metadataPrefix?.enabled === true
+  /** 前缀规则表：传入即整表替换默认表（空数组 = 全部不识别）。 */
+  const metadataPrefixRules = options.metadataPrefix?.rules ?? DEFAULT_METADATA_PREFIX_RULES
   /** 第三态：识别前缀时是否额外保留一条普通歌词行（仅在识别开启时被读取）。 */
   const keepLyricLine = options.metadataPrefix?.keepLyricLine === true
 
@@ -375,8 +423,7 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
     if (timeMatches.length === 0) {
       const tags = extractMetadataTags(rawLine)
       if (tags !== null) {
-        // TODO(空行·未来扩展)：元数据块内部的空行（两条元数据行之间）本轮丢弃，
-        // 属已知有损缺口；未来可在此承载（如在 metadataTags 同槽位记录）。
+        // 元数据块内部的空行不在此落盘：留在 pendingBlanks，随下一条内容行归位。
         flushBlanksForMetaRow()
         metadataTags.push(tags)
         for (const { name, value } of tags) applyMetaTag(name, value)
@@ -393,12 +440,14 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
       // 普通行的行角色：供下方普通行与前缀保留行共用（同一概念单一来源）。
       const role: LyricLineRole = sourceHasTimestamp ? 'unknown' : 'main'
 
-      // 元数据前缀识别：窗口内、首条带时间戳的行之前；命中即转元数据，该行不进 lines。
+      // 元数据前缀识别：窗口内、首条带时间戳的行之前；命中且 action 为 meta 即转元数据，
+      // 该行不进 lines。action 为 line 的规则绝不转元数据，也无视全局 keepLyricLine，
+      // 直接落到下方 placeLine 当作普通歌词行。
       // 命中时同步 push 进 metadataTags（占源顺序位置），否则 pristine 判据 (b) 失败 →
       // 导出退回单行标准序，多行元数据布局会塌陷。
       if (recognizeMetadataPrefix && withinPrefixWindow && !sawTimestamp) {
-        const matched = matchMetadataPrefix(rawLine)
-        if (matched !== null) {
+        const matched = matchMetadataPrefix(rawLine, metadataPrefixRules)
+        if (matched !== null && matched.action === 'meta') {
           flushBlanksForMetaRow()
           metadataTags.push([{ name: matched.tag, value: matched.value }])
           applyMetaTag(matched.tag, matched.value)
@@ -447,13 +496,51 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
 
   const detectedFormat = sawWordTimestamp ? 'enhanced-lrc' : sawTimestamp ? 'lrc' : lines.length > 0 ? 'plain' : 'unknown'
 
-  // 过滤孤儿锚点：双语合并会吞噬被动行，其 id 不再出现在 merged.lines 中，
-  // 挂在它上面的空行随之丢弃（降级规则：锚点消失即丢弃，不顺延）。
+  // 清理孤儿锚点：双语合并会吞噬被动行，其 id 不再出现在 merged.lines 中。
+  // 挂在孤儿上的空行不顺延丢弃，而是顺延到合并后的存活行；实在无法定位则归 trailing。
+  // 按 beforeLineBlanks 的插入顺序（即源文件顺序）遍历，保证空行数组顺序不变。
   const presentIds = new Set(merged.lines.map((line) => line.id))
+  const originalIndex = new Map(lines.map((line, index) => [line.id, index]))
+  const toleranceMs = bilingual.toleranceMs ?? 0
+  const sameTimestampSet = (left: LyricLine, right: LyricLine): boolean =>
+    left.timestamps.length === right.timestamps.length &&
+    left.timestamps.every(
+      (stamp, index) => Math.abs(stamp.timeMs - right.timestamps[index].timeMs) <= toleranceMs,
+    )
+
   const beforeLine: Record<string, string[]> = {}
+  const orphanTrailing: string[] = []
   for (const [id, blanks] of Object.entries(beforeLineBlanks)) {
-    if (presentIds.has(id)) beforeLine[id] = blanks
+    if (presentIds.has(id)) {
+      ;(beforeLine[id] ??= []).push(...blanks)
+      continue
+    }
+
+    const index = originalIndex.get(id)
+    const line = index === undefined ? undefined : lines[index]
+    const previous = index !== undefined && index > 0 ? lines[index - 1] : undefined
+    const next = index !== undefined ? lines[index + 1] : undefined
+    const previousAlive = previous !== undefined && presentIds.has(previous.id) ? previous : undefined
+    const nextAlive = next !== undefined && presentIds.has(next.id) ? next : undefined
+
+    // 优先挂到时间戳一致的相邻存活行（即双语合并的合并目标），
+    // 否则退化为任一相邻存活行；都没有则归 trailing。
+    const target =
+      previousAlive !== undefined && line !== undefined && sameTimestampSet(previousAlive, line)
+        ? previousAlive
+        : nextAlive !== undefined && line !== undefined && sameTimestampSet(nextAlive, line)
+          ? nextAlive
+          : (previousAlive ?? nextAlive)
+
+    if (target !== undefined) {
+      ;(beforeLine[target.id] ??= []).push(...blanks)
+    } else {
+      orphanTrailing.push(...blanks)
+    }
   }
+
+  // 孤儿空行位于源文件末尾时排在真实 trailing 之前，保持源顺序。
+  if (orphanTrailing.length > 0) trailingBlanks.unshift(...orphanTrailing)
 
   const hasBlankLines =
     leadingBlanks.length > 0 || trailingBlanks.length > 0 || Object.keys(beforeLine).length > 0
