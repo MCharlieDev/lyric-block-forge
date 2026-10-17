@@ -73,13 +73,15 @@ const METADATA_PREFIX_MAX_LINES = 10
  *
  * - `prefix`：行首精确匹配的前缀（如「作词」）；
  * - `tag`：写入 `applyMetaTag` 的标签名（标准标签名如 `lyricist`，或自定义键）；
- * - `action`：命中后的处理方式，缺省 `'meta'`。`'line'` 表示绝不转元数据，
- *   始终按普通歌词行保留（优先于全局 `keepLyricLine`）。
+ * - `action`：命中后的处理方式，缺省 `'meta'`：
+ *   - `'off'` 忽略该规则，保留为普通歌词行；
+ *   - `'meta'` 仅转元数据，是否保留歌词行取决于全局 `keepLyricLine`；
+ *   - `'meta+line'` 既转元数据，又强制保留歌词行（优先于全局 `keepLyricLine`）。
  */
 export interface MetadataPrefixRule {
   prefix: string
   tag: string
-  action?: 'meta' | 'line'
+  action?: 'off' | 'meta' | 'meta+line'
 }
 
 /**
@@ -167,7 +169,7 @@ function isValidMetadataPrefixRule(rule: MetadataPrefixRule): boolean {
 function matchMetadataPrefix(
   line: string,
   rules: readonly MetadataPrefixRule[],
-): { tag: string; value: string; action: 'meta' | 'line' } | null {
+): { tag: string; value: string; action: 'off' | 'meta' | 'meta+line' } | null {
   for (const rule of rules) {
     if (!isValidMetadataPrefixRule(rule)) continue
     if (!line.startsWith(rule.prefix)) continue
@@ -175,7 +177,8 @@ function matchMetadataPrefix(
     if (separator === '' || !METADATA_PREFIX_SEPARATORS.includes(separator)) continue
     const value = line.slice(rule.prefix.length + 1).trim()
     if (value === '') continue
-    return { tag: rule.tag, value, action: rule.action === 'line' ? 'line' : 'meta' }
+    const action = rule.action === 'off' || rule.action === 'meta+line' ? rule.action : 'meta'
+    return { tag: rule.tag, value, action }
   }
   return null
 }
@@ -440,20 +443,19 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
       // 普通行的行角色：供下方普通行与前缀保留行共用（同一概念单一来源）。
       const role: LyricLineRole = sourceHasTimestamp ? 'unknown' : 'main'
 
-      // 元数据前缀识别：窗口内、首条带时间戳的行之前；命中且 action 为 meta 即转元数据，
-      // 该行不进 lines。action 为 line 的规则绝不转元数据，也无视全局 keepLyricLine，
-      // 直接落到下方 placeLine 当作普通歌词行。
+      // 元数据前缀识别：窗口内、首条带时间戳的行之前。action 为 off 时忽略该规则，
+      // 直接落到下方 placeLine 当作普通歌词行；其余动作先转元数据（该行不进 lines），
+      // 再按 meta+line（强制）或全局 keepLyricLine 决定是否额外保留一条歌词行。
       // 命中时同步 push 进 metadataTags（占源顺序位置），否则 pristine 判据 (b) 失败 →
       // 导出退回单行标准序，多行元数据布局会塌陷。
       if (recognizeMetadataPrefix && withinPrefixWindow && !sawTimestamp) {
         const matched = matchMetadataPrefix(rawLine, metadataPrefixRules)
-        if (matched !== null && matched.action === 'meta') {
+        if (matched !== null && matched.action !== 'off') {
           flushBlanksForMetaRow()
           metadataTags.push([{ name: matched.tag, value: matched.value }])
           applyMetaTag(matched.tag, matched.value)
-          if (keepLyricLine) {
-            // 第三态：除元数据标签外，额外保留一条普通歌词行（文本=原行，时间戳 00:00.000），
-            // 兜底给不认元数据标签的播放器显示。
+          if (matched.action === 'meta+line' || keepLyricLine) {
+            // 保留歌词行：文本=原行，时间戳 00:00.000，兜底给不认元数据标签的播放器显示。
             placeLine(buildLine(rawLine.trim(), role, rawLine, [{ timeMs: 0, precisionMs: 1 }], []))
           }
           continue

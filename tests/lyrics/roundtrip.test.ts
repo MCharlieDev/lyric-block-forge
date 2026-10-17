@@ -505,19 +505,49 @@ describe('元数据前缀识别', () => {
   })
 
   describe('可配置前缀表：action 与边界', () => {
-    test("v. action:'line' 保留歌词行、不写元数据、无视全局 keepLyricLine", () => {
+    test("v. action:'off' 忽略规则：不写元数据、原文本保留", () => {
       const src = '作词：张三\n[00:01.00]x\n'
       const doc = parseOk(src, {
         metadataPrefix: {
           enabled: true,
-          keepLyricLine: true,
-          rules: [{ prefix: '作词', tag: 'lyricist', action: 'line' }],
+          rules: [{ prefix: '作词', tag: 'lyricist', action: 'off' }],
         },
       })
       expect(doc.meta.lyricist).toBeUndefined()
       expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三', 'x'])
       expect(doc.lines[0].timestamps).toEqual([])
       expect(serializeLrc(doc)).toBe(src)
+    })
+
+    test("v2. action:'meta+line' 转元数据并强制保留歌词行（无视全局 keepLyricLine=false）", () => {
+      const src = '作词：张三\n[00:01.00]x\n'
+      const doc = parseOk(src, {
+        metadataPrefix: {
+          enabled: true,
+          keepLyricLine: false,
+          rules: [{ prefix: '作词', tag: 'lyricist', action: 'meta+line' }],
+        },
+      })
+      expect(doc.meta.lyricist).toBe('张三')
+      expect(doc.lines.map((line) => line.text)).toEqual(['作词：张三', 'x'])
+      expect(doc.lines[0].timestamps).toEqual([
+        { kind: 'line', timeMs: 0, precisionMs: 1, source: 'import' },
+      ])
+      expect(serializeLrc(doc)).toBe('[lyricist:张三]\n[00:00.000]作词：张三\n[00:01.00]x\n')
+    })
+
+    test("v3. action:'meta+line' 与全局 keepLyricLine 同开时不重复保留行", () => {
+      const src = '作词：张三\n[00:01.00]x\n'
+      const doc = parseOk(src, {
+        metadataPrefix: {
+          enabled: true,
+          keepLyricLine: true,
+          rules: [{ prefix: '作词', tag: 'lyricist', action: 'meta+line' }],
+        },
+      })
+      expect(doc.meta.lyricist).toBe('张三')
+      expect(doc.lines.filter((line) => line.text === '作词：张三')).toHaveLength(1)
+      expect(serializeLrc(doc)).toBe('[lyricist:张三]\n[00:00.000]作词：张三\n[00:01.00]x\n')
     })
 
     test('w. 非法规则静默跳过：prefix 含分隔符 / tag 为空', () => {

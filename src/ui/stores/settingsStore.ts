@@ -162,7 +162,9 @@ function normalizeMetadataPrefixRules(value: unknown): MetadataPrefixRule[] {
     if (prefix === '' || tag === '') continue
     if (!METADATA_TAG_PATTERN.test(tag)) continue
     if (Array.from(prefix).some((char) => METADATA_PREFIX_SEPARATORS.includes(char))) continue
-    rules.push({ prefix, tag, action: record.action === 'line' ? 'line' : 'meta' })
+    const action =
+      record.action === 'off' || record.action === 'meta+line' ? record.action : 'meta'
+    rules.push({ prefix, tag, action })
   }
   return rules
 }

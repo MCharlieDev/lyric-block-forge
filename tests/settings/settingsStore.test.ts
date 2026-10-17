@@ -31,11 +31,11 @@ describe('settingsStore · metadataPrefixRules', () => {
 
   it('hydrate 合法规则时保留并 trim', () => {
     useSettingsStore.getState().hydrate({
-      metadataPrefixRules: [{ prefix: ' 词 ', tag: ' lyricist ', action: 'line' }],
+      metadataPrefixRules: [{ prefix: ' 词 ', tag: ' lyricist ', action: 'off' }],
     })
 
     expect(useSettingsStore.getState().settings.metadataPrefixRules).toEqual([
-      { prefix: '词', tag: 'lyricist', action: 'line' },
+      { prefix: '词', tag: 'lyricist', action: 'off' },
     ])
   })
 

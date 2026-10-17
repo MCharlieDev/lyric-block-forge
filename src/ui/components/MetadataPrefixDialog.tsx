@@ -228,13 +228,19 @@ export function MetadataPrefixDialog({
                     <select
                       value={rule.action ?? 'meta'}
                       onChange={(event) =>
-                        updateRule(index, { action: event.target.value === 'line' ? 'line' : 'meta' })
+                        updateRule(index, {
+                          action:
+                            event.target.value === 'off' || event.target.value === 'meta+line'
+                              ? event.target.value
+                              : 'meta',
+                        })
                       }
                       aria-label={`第 ${index + 1} 条规则的动作`}
                       className={`${fieldClass} border-divider`}
                     >
-                      <option value="meta">转元数据</option>
-                      <option value="line">保留歌词行</option>
+                      <option value="off">关闭规则</option>
+                      <option value="meta">仅转元数据</option>
+                      <option value="meta+line">元数据+歌词</option>
                     </select>
                     <button
                       type="button"
