@@ -7,7 +7,14 @@
 
 import { describe, expect, test } from 'vitest'
 import { layoutBlock, BLOCK_CHROME_X_PX } from '@ui/timeline/blockLayout'
-import { BLOCK_GAP_PX, MIN_BLOCK_WIDTH_PX } from '@ui/timeline/constants'
+import {
+  BLOCK_GAP_PX,
+  MIN_BLOCK_WIDTH_PX,
+  WORD_CARD_DEGRADED_WIDTH_PX,
+  WORD_CARD_HANDLE_GAP_PX,
+  WORD_CARD_HANDLE_WIDTH_PX,
+  WORD_CHIP_MIN_WIDTH_PX,
+} from '@ui/timeline/constants'
 
 /** 块左右两侧的装饰宽合计（padding + border，共 14px）。 */
 const PAD = BLOCK_CHROME_X_PX
@@ -119,5 +126,80 @@ describe('layoutBlock · 内容宽与保底宽', () => {
 
     expect(result.minWidthPx).toBe(MIN_BLOCK_WIDTH_PX)
     expect(result.widthPx).toBe(MIN_BLOCK_WIDTH_PX)
+  })
+})
+
+describe('layoutBlock · word 模式与降级', () => {
+  /** word 模式的最小总宽：把手 + 间隔 + 最小 chip + chrome = 52。 */
+  const WORD_MIN_WIDTH =
+    WORD_CARD_HANDLE_WIDTH_PX + WORD_CARD_HANDLE_GAP_PX + WORD_CHIP_MIN_WIDTH_PX + PAD
+
+  test('l. word 模式、无下一行：宽度 = chip 行 + 把手 + 间隔 + chrome', () => {
+    const result = layoutBlock(
+      input({ mode: 'word', wordRowWidthPx: 76, nextStartMs: null }),
+    )
+
+    expect(result.contentWidthPx).toBe(76 + WORD_CARD_HANDLE_WIDTH_PX + WORD_CARD_HANDLE_GAP_PX + PAD)
+    expect(result.contentWidthPx).toBe(106)
+    expect(result.minWidthPx).toBe(WORD_MIN_WIDTH)
+    expect(result.widthPx).toBe(106)
+    expect(result.isDegraded).toBe(false)
+  })
+
+  test('m. word 模式、cap 充足：宽度只由 chip 行决定，不回退到正文/信息行/译文', () => {
+    // 正文/信息行/译文故意给得很大，word 模式必须完全忽略它们。
+    const result = layoutBlock(
+      input({
+        mode: 'word',
+        bodyWidthPx: 900,
+        infoRowWidthPx: 800,
+        translationWidthPx: 700,
+        wordRowWidthPx: 100,
+        nextStartMs: 204,
+        pixelsPerMs: 1,
+      }),
+    )
+
+    // content = 100 + 12 + 4 + 14 = 130；cap = 204 - 4 = 200，装得下。
+    expect(result.contentWidthPx).toBe(130)
+    expect(result.widthPx).toBe(130)
+    expect(result.isCompressed).toBe(false)
+    expect(result.isDegraded).toBe(false)
+  })
+
+  test('n. word 模式、cap < 52 且允许降级：降级为 14px 极窄块', () => {
+    // content = 106；timeGap = 50，cap = 46 < 52。
+    const result = layoutBlock(
+      input({
+        mode: 'word',
+        wordRowWidthPx: 76,
+        nextStartMs: 50,
+        pixelsPerMs: 1,
+        degradeEnabled: true,
+      }),
+    )
+
+    expect(result.isDegraded).toBe(true)
+    expect(result.widthPx).toBe(WORD_CARD_DEGRADED_WIDTH_PX)
+    expect(result.isCompressed).toBe(true)
+    // 14 < 46：降级后不越过下一块。
+    expect(result.overlapsNext).toBe(false)
+  })
+
+  test('o. word 模式、cap < 52 但关闭降级：保底 52，接受重叠', () => {
+    const result = layoutBlock(
+      input({
+        mode: 'word',
+        wordRowWidthPx: 76,
+        nextStartMs: 50,
+        pixelsPerMs: 1,
+        degradeEnabled: false,
+      }),
+    )
+
+    expect(result.isDegraded).toBe(false)
+    expect(result.widthPx).toBe(WORD_MIN_WIDTH)
+    expect(result.widthPx).toBe(52)
+    expect(result.overlapsNext).toBe(true)
   })
 })

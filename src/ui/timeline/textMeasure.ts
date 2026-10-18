@@ -7,6 +7,8 @@
  *   并带文本级缓存。顶层不访问 `document` / `canvas` / `window`，只有真正调用时才初始化。
  */
 
+import { WORD_CHIP_MIN_WIDTH_PX } from './constants'
+
 /** 块内参与测量的文本样式。 */
 export type TextStyleKey = 'body' | 'timecode' | 'badge' | 'chip' | 'translation'
 
@@ -27,6 +29,11 @@ export interface LineMeasureInput {
   hasWords: boolean
   /** 是否带译文，渲染「双语」徽标。 */
   hasTranslation: boolean
+  /**
+   * word 模式下的 chip 文本（已按显示顺序排好）。
+   * 不传或空数组时 `wordRowWidthPx` 为 null；line 模式不传。
+   */
+  wordTexts?: readonly string[]
 }
 
 /** 单行的自然宽结果，全部不含块的 padding / border。 */
@@ -37,7 +44,7 @@ export interface LineWidths {
   infoRowWidthPx: number
   /** 译文自然宽，无译文时为 null。 */
   translationWidthPx: number | null
-  /** 字级 chip 行自然宽，本轮固定为 null。 */
+  /** word 模式 chip 行自然宽；未传 `wordTexts` 或为空时为 null。 */
   wordRowWidthPx: number | null
 }
 
@@ -46,6 +53,12 @@ const BADGE_GAP_PX = 4
 
 /** 徽标自身左右内边距合计（对应 DOM 的 `px-1`）。 */
 const BADGE_PADDING_X_PX = 8
+
+/** word 模式 chip 自身左右内边距合计（对应 DOM 的 `px-1`）。 */
+const CHIP_PADDING_X_PX = 8
+
+/** word 模式 chip 之间的间距（对应 DOM 的 `gap-0.5`）。 */
+const CHIP_GAP_PX = 2
 
 /**
  * 纯函数：由注入的测量函数算出单行各项宽度。
@@ -71,7 +84,21 @@ export function computeLineWidths(input: LineMeasureInput, measure: MeasureTextF
 
   const translationWidthPx = input.translation ? measure(input.translation, 'translation') : null
 
-  return { bodyWidthPx, infoRowWidthPx, translationWidthPx, wordRowWidthPx: null }
+  // word 模式 chip 行：每个 chip 取「文本宽 + 左右 padding」与最小宽的较大者，
+  // chip 之间再加间隔。不含把手与块 chrome，由 blockLayout 负责相加。
+  const wordTexts = input.wordTexts
+  let wordRowWidthPx: number | null = null
+  if (wordTexts !== undefined && wordTexts.length > 0) {
+    wordRowWidthPx =
+      wordTexts.reduce(
+        (sum, chipText) =>
+          sum + Math.max(measure(chipText, 'chip') + CHIP_PADDING_X_PX, WORD_CHIP_MIN_WIDTH_PX),
+        0,
+      ) +
+      CHIP_GAP_PX * (wordTexts.length - 1)
+  }
+
+  return { bodyWidthPx, infoRowWidthPx, translationWidthPx, wordRowWidthPx }
 }
 
 /** 各样式对应的探针 class，必须与 `LyricBlock` 内真实元素的排版类保持一致。 */
@@ -79,7 +106,8 @@ const STYLE_PROBE_CLASS: Record<TextStyleKey, string> = {
   body: 'text-xs',
   timecode: 'font-mono text-[10px]',
   badge: 'font-mono text-[9px]',
-  chip: 'text-[10px]',
+  // 该探针现在只服务 word 模式 chip（12px）；line 态旧 chip 行不做测量，不受影响。
+  chip: 'text-xs',
   translation: 'text-[10px]',
 }
 

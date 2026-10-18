@@ -12,6 +12,7 @@ import {
   type MeasureTextFn,
   type TextStyleKey,
 } from '@ui/timeline/textMeasure'
+import { WORD_CHIP_MIN_WIDTH_PX } from '@ui/timeline/constants'
 
 const CHAR_PX = 10
 
@@ -98,6 +99,42 @@ describe('computeLineWidths · 译文与字级行', () => {
     const result = computeLineWidths(input({ hasWords: true, translation: '译文' }), measure)
 
     expect(result.wordRowWidthPx).toBeNull()
+  })
+})
+
+describe('computeLineWidths · word 模式 chip 行', () => {
+  /** 指定每个文本的测量宽，未列出的回退到每字符 10px。 */
+  function createFixedMeasure(widths: Record<string, number>): MeasureTextFn {
+    return (text) => widths[text] ?? text.length * CHAR_PX
+  }
+
+  test('i. 三个 chip：每个取 max(文本宽 + 8, 22)，再加 2px 间隔', () => {
+    const measure = createFixedMeasure({ a: 10, bb: 20, c: 5 })
+    const result = computeLineWidths(input({ wordTexts: ['a', 'bb', 'c'] }), measure)
+
+    // max(10+8,22)=22、max(20+8,22)=28、max(5+8,22)=22，加 2×2 间隔 = 76
+    expect(result.wordRowWidthPx).toBe(76)
+  })
+
+  test('j. 空数组：wordRowWidthPx 为 null', () => {
+    const { measure } = createMeasure()
+    const result = computeLineWidths(input({ wordTexts: [] }), measure)
+
+    expect(result.wordRowWidthPx).toBeNull()
+  })
+
+  test('k. 不传 wordTexts：wordRowWidthPx 为 null（回归）', () => {
+    const { measure } = createMeasure()
+    const result = computeLineWidths(input({ hasWords: true }), measure)
+
+    expect(result.wordRowWidthPx).toBeNull()
+  })
+
+  test('l. 单个短文本：取下界 WORD_CHIP_MIN_WIDTH_PX', () => {
+    const measure = createFixedMeasure({ a: 5 })
+    const result = computeLineWidths(input({ wordTexts: ['a'] }), measure)
+
+    expect(result.wordRowWidthPx).toBe(WORD_CHIP_MIN_WIDTH_PX)
   })
 })
 

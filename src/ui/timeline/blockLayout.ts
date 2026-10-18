@@ -8,7 +8,19 @@
  * 不变式：块左边缘恒等于 `startMs × pixelsPerMs`，本模块只决定宽度，绝不改位置。
  */
 
-import { BLOCK_GAP_PX, MIN_BLOCK_WIDTH_PX } from './constants'
+import {
+  BLOCK_GAP_PX,
+  MIN_BLOCK_WIDTH_PX,
+  WORD_CARD_DEGRADED_WIDTH_PX,
+  WORD_CARD_DEGRADE_CAP_PX,
+  WORD_CARD_DEGRADE_ENABLED,
+  WORD_CARD_HANDLE_GAP_PX,
+  WORD_CARD_HANDLE_WIDTH_PX,
+  WORD_CHIP_MIN_WIDTH_PX,
+} from './constants'
+
+/** 卡片形态：`line` 为缩小态行级卡片，`word` 为放大态字级卡片。 */
+export type BlockCardMode = 'line' | 'word'
 
 /** 单侧内边距（CSS px）：对应容器的 `px-1.5`，左右各 6px。 */
 export const BLOCK_PADDING_SIDE_PX = 6
@@ -32,10 +44,7 @@ export interface BlockLayoutInput {
   infoRowWidthPx: number
   /** 译文的自然宽，没有译文时传 null。 */
   translationWidthPx: number | null
-  /**
-   * 字级 chip 行的自然宽，没有字级时间戳时传 null。
-   * 本轮固定传 null，字级 chip 的测量与参与留到下一轮。
-   */
+  /** 字级 chip 行的自然宽，没有字级时间戳时传 null。 */
   wordRowWidthPx: number | null
   /** 当前行起点（毫秒）。 */
   startMs: number
@@ -43,13 +52,17 @@ export interface BlockLayoutInput {
   nextStartMs: number | null
   /** 当前缩放（毫秒 → CSS px）。 */
   pixelsPerMs: number
+  /** 卡片形态，缺省 `'line'`（生产默认路径）。 */
+  mode?: BlockCardMode
+  /** 是否允许降级，缺省取 `WORD_CARD_DEGRADE_ENABLED`；仅测试与未来设置用。 */
+  degradeEnabled?: boolean
 }
 
 /** `layoutBlock` 的输出。 */
 export interface BlockLayoutResult {
-  /** 内容自然宽：各行自然宽的最大值 + padding / border。 */
+  /** 内容自然宽：line 取正文/信息行/译文的较大者，word 只取把手 + chip 行；均加 padding / border。 */
   contentWidthPx: number
-  /** 保底宽：至少装得下信息行，且不小于 `MIN_BLOCK_WIDTH_PX`。 */
+  /** 保底宽：line 至少装得下信息行，word 至少装得下把手 + 最小 chip；均不小于 `MIN_BLOCK_WIDTH_PX`。 */
   minWidthPx: number
   /** 最终写入样式的块宽。 */
   widthPx: number
@@ -57,6 +70,8 @@ export interface BlockLayoutResult {
   isCompressed: boolean
   /** 保底宽是否越过了下一块起点（即与下一块真实重叠）。 */
   overlapsNext: boolean
+  /** 是否降级为极窄块（只在 word 模式、有下一行且 cap 不足时发生）。 */
+  isDegraded: boolean
 }
 
 /**
@@ -71,35 +86,72 @@ export interface BlockLayoutResult {
  * @returns 宽度结果；`widthPx` 单位为 CSS px
  */
 export function layoutBlock(input: BlockLayoutInput): BlockLayoutResult {
-  const { bodyWidthPx, infoRowWidthPx, translationWidthPx, startMs, nextStartMs, pixelsPerMs } = input
+  const {
+    bodyWidthPx,
+    infoRowWidthPx,
+    translationWidthPx,
+    wordRowWidthPx,
+    startMs,
+    nextStartMs,
+    pixelsPerMs,
+  } = input
 
+  const mode = input.mode ?? 'line'
   const pad = BLOCK_CHROME_X_PX
 
-  // 本轮 wordRowWidthPx 固定为 null，不参与 contentWidth；下一轮字级 chip 接入后加入 max。
-  const contentInner = Math.max(bodyWidthPx, infoRowWidthPx, translationWidthPx ?? 0)
-  const contentWidthPx = contentInner + pad
+  let contentWidthPx: number
+  let minWidthPx: number
 
-  const minWidthPx = Math.max(infoRowWidthPx + pad, MIN_BLOCK_WIDTH_PX)
+  if (mode === 'word') {
+    // 放大态：内容宽只由「把手 + 间隔 + chip 行」决定，不得再纳入正文/信息行/译文。
+    const contentInner =
+      (wordRowWidthPx ?? 0) + WORD_CARD_HANDLE_WIDTH_PX + WORD_CARD_HANDLE_GAP_PX
+    contentWidthPx = contentInner + pad
+    // 最小可用宽 = 把手 + 间隔 + 最小 chip + chrome = 52。
+    minWidthPx = Math.max(
+      MIN_BLOCK_WIDTH_PX,
+      WORD_CARD_HANDLE_WIDTH_PX + WORD_CARD_HANDLE_GAP_PX + WORD_CHIP_MIN_WIDTH_PX + pad,
+    )
+  } else {
+    const contentInner = Math.max(bodyWidthPx, infoRowWidthPx, translationWidthPx ?? 0)
+    contentWidthPx = contentInner + pad
+    minWidthPx = Math.max(infoRowWidthPx + pad, MIN_BLOCK_WIDTH_PX)
+  }
 
   if (nextStartMs === null) {
+    // 占位阶段没有 cap，无法降级；isDegraded 结构性恒为 false。
     return {
       contentWidthPx,
       minWidthPx,
       widthPx: Math.max(contentWidthPx, minWidthPx),
       isCompressed: false,
       overlapsNext: false,
+      isDegraded: false,
     }
   }
 
   const timeGapPx = (nextStartMs - startMs) * pixelsPerMs
   const cap = timeGapPx - BLOCK_GAP_PX
-  const widthPx = Math.max(minWidthPx, Math.min(contentWidthPx, cap))
+  const degradeEnabled = input.degradeEnabled ?? WORD_CARD_DEGRADE_ENABLED
+
+  // cap 连「最小可用总宽」都装不下时降级为极窄块（至少不越出时间间距）。
+  const shouldDegrade =
+    mode === 'word' &&
+    degradeEnabled &&
+    cap < WORD_CARD_DEGRADE_CAP_PX &&
+    contentWidthPx > cap
+
+  const widthPx = shouldDegrade
+    ? WORD_CARD_DEGRADED_WIDTH_PX
+    : Math.max(minWidthPx, Math.min(contentWidthPx, cap))
 
   return {
     contentWidthPx,
     minWidthPx,
     widthPx,
-    isCompressed: widthPx < contentWidthPx,
+    isCompressed: shouldDegrade || widthPx < contentWidthPx,
+    // 降级后若 cap < 14 仍会与下一块残余重叠；公式与 line 模式一致。
     overlapsNext: widthPx > cap,
+    isDegraded: shouldDegrade,
   }
 }

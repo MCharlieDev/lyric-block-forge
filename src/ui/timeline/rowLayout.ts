@@ -9,7 +9,7 @@
  * 不变式：块左边缘恒等于 `startMs × pixelsPerMs`，本模块只决定行号与宽度。
  */
 
-import { layoutBlock } from './blockLayout'
+import { layoutBlock, type BlockCardMode } from './blockLayout'
 
 /** `layoutRows` 的输入：测量宽已由调用方准备好，单位 CSS px。 */
 export interface RowLayoutItem {
@@ -23,6 +23,10 @@ export interface RowLayoutItem {
   translationWidthPx: number | null
   /** 字级行自然宽，没有字级时间戳时传 null。 */
   wordRowWidthPx: number | null
+  /** 卡片形态，缺省 `'line'`；原样透传给 `layoutBlock`。 */
+  mode?: BlockCardMode
+  /** 是否允许降级，缺省取全局开关；原样透传给 `layoutBlock`。 */
+  degradeEnabled?: boolean
 }
 
 /** `layoutRows` 的输出，按输入顺序一一对应。 */
@@ -37,6 +41,8 @@ export interface RowLayoutEntry {
   endPx: number
   /** 是否与同行前一块有像素交叠（按第二阶段的最终几何判定）。 */
   overlapsPrev: boolean
+  /** 是否降级为极窄块（只会发生在第二阶段的 word 模式）。 */
+  isDegraded: boolean
 }
 
 /**
@@ -84,7 +90,8 @@ export function layoutRows(
     const startPx = item.startMs * pixelsPerMs
     startPxs[index] = startPx
 
-    // 内容上界：任意 nextStartMs 下最终宽都不会超过它
+    // 内容上界：任意 nextStartMs 下最终宽都不会超过它。
+    // 此阶段没有 cap，降级结构性不可达（isDegraded 恒 false），只取宽度定行号。
     const placeholderWidthPx = layoutBlock({
       ...item,
       nextStartMs: null,
@@ -127,7 +134,7 @@ export function layoutRows(
             ? durationMs
             : null
 
-      const { widthPx } = layoutBlock({
+      const { widthPx, isDegraded } = layoutBlock({
         ...item,
         nextStartMs,
         pixelsPerMs,
@@ -140,6 +147,7 @@ export function layoutRows(
         widthPx,
         endPx,
         overlapsPrev: prevEndPx !== null && startPx < prevEndPx,
+        isDegraded,
       }
       prevEndPx = endPx
     }

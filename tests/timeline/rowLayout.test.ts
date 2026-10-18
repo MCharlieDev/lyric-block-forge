@@ -10,6 +10,11 @@
 
 import { describe, expect, test } from 'vitest'
 import { layoutRows, type RowLayoutItem } from '@ui/timeline/rowLayout'
+import { BLOCK_CHROME_X_PX } from '@ui/timeline/blockLayout'
+import {
+  WORD_CARD_HANDLE_GAP_PX,
+  WORD_CARD_HANDLE_WIDTH_PX,
+} from '@ui/timeline/constants'
 
 /**
  * 造一份默认块：正文 86 + chrome 14 = 内容宽 100；保底宽 40。
@@ -125,5 +130,49 @@ describe('layoutRows · 同行宽度与重叠', () => {
     expect(entries.map((entry) => entry.startPx)).toEqual([60, 0, 30])
     // 行 0 = 0/60：0 被挤压到 56；60 为末块 100；行 1 的 30 为末块 100
     expect(entries.map((entry) => entry.widthPx)).toEqual([100, 56, 100])
+  })
+})
+
+describe('layoutRows · word 模式与降级', () => {
+  /** word 模式第一遍占位宽：chip 行 76 + 把手 12 + 间隔 4 + chrome 14 = 106。 */
+  const WORD_PLACEHOLDER_PX = 76 + WORD_CARD_HANDLE_WIDTH_PX + WORD_CARD_HANDLE_GAP_PX + BLOCK_CHROME_X_PX
+
+  test('j. word 条目同行间距不足：第二遍降级为 14px，且最终宽不超过第一遍占位宽', () => {
+    const items = [
+      item(0, { mode: 'word', wordRowWidthPx: 76, degradeEnabled: true }),
+      item(20, { mode: 'word', wordRowWidthPx: 76, degradeEnabled: true }),
+      item(30, { mode: 'word', wordRowWidthPx: 76, degradeEnabled: true }),
+    ]
+
+    const entries = layoutRows(items, 1, 10_000, 2)
+
+    // 第一遍：0→行0、20→行1、30 两行都占且行0右缘 106 < 行1右缘 126 → 行0。
+    expect(entries.map((entry) => entry.rowIndex)).toEqual([0, 1, 0])
+    // 第二遍：0 的同行下一块在 30 → cap = 26 < 52 → 降级。
+    expect(entries[0].isDegraded).toBe(true)
+    expect(entries[0].widthPx).toBe(14)
+    expect(entries[1].isDegraded).toBe(false)
+    expect(entries[2].isDegraded).toBe(false)
+
+    // 上界不变式：第二遍最终宽只可能收缩，行号不会被推翻。
+    for (const entry of entries) {
+      expect(entry.widthPx).toBeLessThanOrEqual(WORD_PLACEHOLDER_PX)
+    }
+  })
+
+  test('k. line 与 word 条目混排：行分配与宽度确定，不报错', () => {
+    const items = [
+      item(0, { mode: 'word', wordRowWidthPx: 76, degradeEnabled: true }),
+      item(50),
+      item(100, { mode: 'word', wordRowWidthPx: 76, degradeEnabled: true }),
+    ]
+
+    const entries = layoutRows(items, 1, 10_000, 2)
+
+    expect(entries.map((entry) => entry.rowIndex)).toEqual([0, 1, 0])
+    // row0：word@0 的下一块在 100 → cap=96，未低于 52，正常压缩到 96；word@100 为末块 106。
+    // row1：line@50 为末块，内容宽 = max(86,20)+14 = 100。
+    expect(entries.map((entry) => entry.widthPx)).toEqual([96, 100, 106])
+    expect(entries.map((entry) => entry.isDegraded)).toEqual([false, false, false])
   })
 })
