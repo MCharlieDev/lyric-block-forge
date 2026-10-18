@@ -232,13 +232,18 @@ export interface EditorState {
    *
    * 只覆盖 `timeMs`；字级的文本与 `range` 来自行模型，不由日志改写。
    *
+   * 输入框单向联动：若本次提交含首字（`wordIndex === 0`）且其时间早于当前行级时间，
+   * 则在**同一条记录**里把行级时间强制拉齐到该首字时间（不弹确认框，直接生效）。
+   * 拖拽触发的拉齐走 {@link nudgeWordsByOffset}，不经过这里。
+   *
    * @param lineId 目标行 ID
    * @param values 逐项改动，`wordIndex` 是行模型 `wordTimestamps` 的数组下标
+   * @returns 触发行级拉齐时返回新的行级时间（毫秒），否则 `null`
    */
   setWordTimestamps: (
     lineId: string,
     values: Array<{ wordIndex: number; timeMs: number; wordText?: string }>,
-  ) => void
+  ) => number | null
   /**
    * 按位移平移若干字级时间戳（字级拖拽），可撤销；**行级默认不动**。
    *
@@ -796,9 +801,9 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   },
 
   setWordTimestamps: (lineId, values) => {
-    const { document, log } = get()
+    const { document, replay, log } = get()
     const line = document.lines.find((item) => item.id === lineId)
-    if (line === undefined) return
+    if (line === undefined) return null
     // 内部一律整数毫秒：只收有限、非负的值，逐项四舍五入
     const changes = values
       .filter((value) => Number.isFinite(value.timeMs) && value.timeMs >= 0)
@@ -808,7 +813,19 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         timeMs: Math.round(value.timeMs),
         wordText: value.wordText,
       }))
-    if (changes.length === 0) return
+    if (changes.length === 0) return null
+    // 首字早于当前行级时间：同一条 absolute 记录里把行级一起拉到首字时间。
+    // 行级未打轴（currentLineTime === null）时无可比对象，不联动。
+    const firstWord = changes.find((value) => value.wordIndex === 0)
+    const currentLineTime = getReplayedLineTime(replay, lineId)
+    const clampedLineTimeMs =
+      firstWord !== undefined && currentLineTime !== null && firstWord.timeMs < currentLineTime
+        ? firstWord.timeMs
+        : null
+    const absoluteValues =
+      clampedLineTimeMs === null
+        ? changes
+        : [...changes, { lineId, wordIndex: null, timeMs: clampedLineTimeMs }]
     const next = appendOperation(log, {
       kind: 'word-timestamp',
       scope: {
@@ -816,11 +833,15 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         wordRefs: changes.map((value) => ({ lineId, wordIndex: value.wordIndex })),
         timeRange: null,
       },
-      delta: { mode: 'absolute', values: changes },
-      description: `字级微调「${line.text}」（${changes.length} 处）`,
+      delta: { mode: 'absolute', values: absoluteValues },
+      description:
+        clampedLineTimeMs === null
+          ? `字级微调「${line.text}」（${changes.length} 处）`
+          : `字级微调并拉齐行头「${line.text}」（${changes.length} 处）`,
       baseVersion: document.version,
     })
     set({ log: next, replay: computeReplay(document, next) })
+    return clampedLineTimeMs
   },
 
   nudgeWordsByOffset: (lineId, wordIndices, deltaMs) => {

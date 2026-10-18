@@ -180,7 +180,7 @@ export function LyricBlock({
                     width: `${box?.widthPx ?? WORD_CHIP_MIN_WIDTH_PX}px`,
                   }}
                 >
-                  <span className="w-full truncate text-left font-mono text-[9px] leading-none text-neutral-500">
+                  <span className="w-full truncate text-left font-mono text-[9px] leading-none text-neutral-200">
                     {formatMiniTime(chip.timeMs)}
                   </span>
                   <span className="w-full truncate text-left text-xs leading-none text-neutral-200">

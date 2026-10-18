@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { LyricLine } from '@core'
 import { getReplayedLineTime, getReplayedWordTime } from '@core'
 import { useEditorStore } from '../stores/editorStore'
+import { showToast } from '../stores/toastStore'
 import { formatDuration } from '../utils/format'
 import { parseTimeInput } from '../utils/timeInput'
 import { LineActionIcon } from './LineActionIcons'
@@ -218,7 +219,15 @@ export function LineEditForm({ line, items, onClose, onDirtyChange }: LineEditFo
         timeMs: entry.value,
         wordText: entry.word.text,
       }))
-    if (wordChanges.length > 0) setWordTimestamps(line.id, wordChanges)
+    if (wordChanges.length > 0) {
+      // 首字早于行级时间时 store 会在同一条记录里拉齐行级，返回新行时间用于提示
+      const clampedLineTimeMs = setWordTimestamps(line.id, wordChanges)
+      if (clampedLineTimeMs !== null) {
+        showToast(
+          `首字时间早于行级时间，行级时间已自动拉齐至 ${formatDuration(clampedLineTimeMs)}`,
+        )
+      }
+    }
 
     // 只带真的变了的字段：正文没变，store 不会清字级
     const patch: {
