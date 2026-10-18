@@ -116,6 +116,32 @@ describe('computeLineWidths · word 模式 chip 行', () => {
     expect(result.wordRowWidthPx).toBe(76)
   })
 
+  test('i2. wordChipWidthsPx 返回每个 chip 的独立宽度（不含间隔）', () => {
+    const measure = createFixedMeasure({ a: 10, bb: 20, c: 5 })
+    const result = computeLineWidths(input({ wordTexts: ['a', 'bb', 'c'] }), measure)
+
+    expect(result.wordChipWidthsPx).toEqual([22, 28, 22])
+  })
+
+  test('i3. wordChipWidthsPx 与时间戳宽度取较大者，并与 wordRowWidthPx 自洽', () => {
+    const measure = createFixedMeasure({ a: 5, bb: 20, '12.08': 60 })
+    const result = computeLineWidths(
+      input({ wordTexts: ['a', 'bb'], wordTimeTexts: ['12.08'] }),
+      measure,
+    )
+
+    // 第一张 max(5+8, 60+8, 22)=68；第二张 max(20+8, 22)=28；间隔 2px → 98
+    expect(result.wordChipWidthsPx).toEqual([68, 28])
+    expect(result.wordRowWidthPx).toBe(98)
+  })
+
+  test('i4. 未传 wordTexts 或空数组：wordChipWidthsPx 为 null', () => {
+    const { measure } = createMeasure()
+
+    expect(computeLineWidths(input({ hasWords: true }), measure).wordChipWidthsPx).toBeNull()
+    expect(computeLineWidths(input({ wordTexts: [] }), measure).wordChipWidthsPx).toBeNull()
+  })
+
   test('j. 空数组：wordRowWidthPx 为 null', () => {
     const { measure } = createMeasure()
     const result = computeLineWidths(input({ wordTexts: [] }), measure)

@@ -19,7 +19,7 @@ import {
   WORD_CARD_PIXELS_PER_MS,
 } from './constants'
 import { LyricBlock, type SelectModifiers } from './LyricBlock'
-import type { BlockCardMode } from './blockLayout'
+import { layoutWordChips, type BlockCardMode, type WordChipBox } from './blockLayout'
 import { deriveDisplayChips, type DisplayChip } from './displayChips'
 import { layoutRows, type RowLayoutItem } from './rowLayout'
 import { measureLineWidths } from './textMeasure'
@@ -65,6 +65,8 @@ interface LaidOutRow {
   overlapsPrev: boolean
   /** 卡片形态（放大态为 `word`） */
   mode: BlockCardMode
+  /** 字级 chip 的块内绝对坐标（仅 `word` 模式有值） */
+  wordChips: WordChipBox[] | null
   /** 是否降级为极窄的菱形关键帧 */
   isDegraded: boolean
 }
@@ -276,6 +278,8 @@ export function LyricTrack() {
    */
   const laidOut = useMemo<LaidOutRow[]>(() => {
     const isExpanded = snapshot.pixelsPerMs >= WORD_CARD_PIXELS_PER_MS
+    /** 与 `measured` 下标对齐的字级 chip 坐标，供最终组装直接取用 */
+    const wordChipsByIndex: Array<WordChipBox[] | null> = []
     const measured: RowLayoutItem[] = rows.map((row) => {
       const wordMode = isExpanded && row.chips.length > 0
       const widths = measureLineWidths({
@@ -288,6 +292,16 @@ export function LyricTrack() {
         wordTexts: wordMode ? row.chips.map((chip) => chip.text) : undefined,
         wordTimeTexts: wordMode ? row.chips.map((chip) => formatMiniTime(chip.timeMs)) : undefined,
       })
+      const wordChips =
+        wordMode && widths.wordChipWidthsPx !== null
+          ? layoutWordChips(
+              widths.wordChipWidthsPx,
+              row.chips.map((chip) => chip.timeMs),
+              row.startMs,
+              snapshot.pixelsPerMs,
+            )
+          : null
+      wordChipsByIndex.push(wordChips)
       return {
         startMs: row.startMs,
         bodyWidthPx: widths.bodyWidthPx,
@@ -296,6 +310,7 @@ export function LyricTrack() {
         wordRowWidthPx: wordMode ? widths.wordRowWidthPx : null,
         mode: wordMode ? 'word' : 'line',
         degradeEnabled: wordMode,
+        wordChips,
       }
     })
 
@@ -314,6 +329,7 @@ export function LyricTrack() {
       endPx: entries[index].endPx,
       overlapsPrev: entries[index].overlapsPrev,
       mode: measured[index].mode ?? 'line',
+      wordChips: wordChipsByIndex[index],
       isDegraded: entries[index].isDegraded,
     }))
   }, [rows, snapshot.pixelsPerMs, snapshot.durationMs])
@@ -793,6 +809,7 @@ export function LyricTrack() {
             overlapsPrev={item.overlapsPrev}
             mode={item.mode}
             chips={item.row.chips}
+            wordChips={item.wordChips}
             isDegraded={item.isDegraded}
           />
         ))}

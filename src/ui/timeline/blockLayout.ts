@@ -16,6 +16,7 @@ import {
   WORD_CARD_DEGRADE_ENABLED,
   WORD_CHIP_MIN_WIDTH_PX,
 } from './constants'
+import { CHIP_GAP_PX } from './textMeasure'
 
 /** 卡片形态：`line` 为缩小态行级卡片，`word` 为放大态字级卡片。 */
 export type BlockCardMode = 'line' | 'word'
@@ -34,6 +35,45 @@ export const BLOCK_BORDER_SIDE_PX = 1
  */
 export const BLOCK_CHROME_X_PX = (BLOCK_PADDING_SIDE_PX + BLOCK_BORDER_SIDE_PX) * 2
 
+/** 微型时间轴上的一个字级卡片盒：块内坐标，`leftPx` 可负。 */
+export interface WordChipBox {
+  leftPx: number
+  widthPx: number
+}
+
+/**
+ * 纯函数：把每个 chip 的宽度按时间戳映射为微型时间轴上的块内坐标。
+ *
+ * - 有时间戳：`leftPx = round((timeMs - startMs) × pixelsPerMs)`，允许负值，
+ *   表示该字早于行起点、向左溢出。
+ * - 无时间戳：按顺序紧贴当前已知最大右缘 + `CHIP_GAP_PX` 排布。
+ *
+ * 本函数不做任何碰撞截断：字与字之间允许重叠。
+ */
+export function layoutWordChips(
+  widthsPx: readonly number[],
+  timesMs: readonly (number | null)[],
+  startMs: number,
+  pixelsPerMs: number,
+): WordChipBox[] {
+  const boxes: WordChipBox[] = []
+  let maxRightPx = 0
+
+  for (let index = 0; index < widthsPx.length; index += 1) {
+    const widthPx = widthsPx[index]
+    const timeMs = timesMs[index]
+    const leftPx =
+      timeMs === null || timeMs === undefined
+        ? maxRightPx + CHIP_GAP_PX
+        : Math.round((timeMs - startMs) * pixelsPerMs)
+
+    boxes.push({ leftPx, widthPx })
+    maxRightPx = Math.max(maxRightPx, leftPx + widthPx)
+  }
+
+  return boxes
+}
+
 /** `layoutBlock` 的输入：所有宽度均已测量，单位 CSS px。 */
 export interface BlockLayoutInput {
   /** 正文自然宽，不含 padding / border。 */
@@ -44,6 +84,11 @@ export interface BlockLayoutInput {
   translationWidthPx: number | null
   /** 字级 chip 行的自然宽，没有字级时间戳时传 null。 */
   wordRowWidthPx: number | null
+  /**
+   * 微型时间轴上的字级卡片盒（`layoutWordChips` 的输出）。
+   * 传入非空数组时 word 模式改走绝对定位口径；缺省走旧的流式口径。
+   */
+  wordChips?: readonly WordChipBox[] | null
   /** 当前行起点（毫秒）。 */
   startMs: number
   /** 排序后的下一行起点（毫秒），包含同起点；没有下一行时传 null。 */
@@ -70,6 +115,10 @@ export interface BlockLayoutResult {
   overlapsNext: boolean
   /** 是否降级为极窄块（只在 word 模式、有下一行且 cap 不足时发生）。 */
   isDegraded: boolean
+  /** 字级卡片的最左偏移（含 0；负值表示向左溢出）。仅诊断/测试用，不参与宽度计算。 */
+  wordMinLeftPx: number
+  /** 字级卡片的最右缘（块内坐标）。仅诊断/测试用，不参与宽度计算。 */
+  wordMaxRightPx: number
 }
 
 /**
@@ -96,9 +145,44 @@ export function layoutBlock(input: BlockLayoutInput): BlockLayoutResult {
 
   const mode = input.mode ?? 'line'
   const pad = BLOCK_CHROME_X_PX
+  const wordChips = input.wordChips
+
+  // 微型时间轴口径：只统计卡片盒的右缘，负向左溢不参与宽度。
+  // 字级卡片允许越过下一行起点，因此这里不做 cap 压缩、也不降级。
+  if (mode === 'word' && wordChips !== null && wordChips !== undefined && wordChips.length > 0) {
+    // 右侧不留 padding：字级卡片直接贴住块右缘，块宽只补左右边框。
+    const wordPad = BLOCK_BORDER_SIDE_PX * 2
+    let wordMaxRightPx = Number.NEGATIVE_INFINITY
+    let wordMinLeftPx = 0
+    for (const box of wordChips) {
+      wordMaxRightPx = Math.max(wordMaxRightPx, box.leftPx + box.widthPx)
+      wordMinLeftPx = Math.min(wordMinLeftPx, box.leftPx)
+    }
+
+    const contentWidthPx = Math.max(0, wordMaxRightPx) + wordPad
+    const minWidthPx = Math.max(MIN_BLOCK_WIDTH_PX, WORD_CHIP_MIN_WIDTH_PX + wordPad)
+    const widthPx = Math.max(contentWidthPx, minWidthPx)
+    const overlapsNext =
+      nextStartMs === null
+        ? false
+        : widthPx > (nextStartMs - startMs) * pixelsPerMs - BLOCK_GAP_PX
+
+    return {
+      contentWidthPx,
+      minWidthPx,
+      widthPx,
+      isCompressed: false,
+      overlapsNext,
+      isDegraded: false,
+      wordMinLeftPx,
+      wordMaxRightPx,
+    }
+  }
 
   let contentWidthPx: number
   let minWidthPx: number
+  let wordMinLeftPx = 0
+  let wordMaxRightPx = 0
 
   if (mode === 'word') {
     // 放大态：内容宽只由 chip 行决定，不得再纳入正文/信息行/译文。
@@ -107,6 +191,7 @@ export function layoutBlock(input: BlockLayoutInput): BlockLayoutResult {
     contentWidthPx = (wordRowWidthPx ?? 0) + wordPad
     // 最小可用宽 = 最小 chip + chrome = max(40, 30) = 40。
     minWidthPx = Math.max(MIN_BLOCK_WIDTH_PX, WORD_CHIP_MIN_WIDTH_PX + wordPad)
+    wordMaxRightPx = wordRowWidthPx ?? 0
   } else {
     const contentInner = Math.max(bodyWidthPx, infoRowWidthPx, translationWidthPx ?? 0)
     contentWidthPx = contentInner + pad
@@ -122,6 +207,8 @@ export function layoutBlock(input: BlockLayoutInput): BlockLayoutResult {
       isCompressed: false,
       overlapsNext: false,
       isDegraded: false,
+      wordMinLeftPx,
+      wordMaxRightPx,
     }
   }
 
@@ -148,5 +235,7 @@ export function layoutBlock(input: BlockLayoutInput): BlockLayoutResult {
     // 降级后若 cap < 14 仍会与下一块残余重叠；公式与 line 模式一致。
     overlapsNext: widthPx > cap,
     isDegraded: shouldDegrade,
+    wordMinLeftPx,
+    wordMaxRightPx,
   }
 }

@@ -9,7 +9,7 @@
  * 不变式：块左边缘恒等于 `startMs × pixelsPerMs`，本模块只决定行号与宽度。
  */
 
-import { layoutBlock, type BlockCardMode } from './blockLayout'
+import { layoutBlock, type BlockCardMode, type WordChipBox } from './blockLayout'
 
 /** `layoutRows` 的输入：测量宽已由调用方准备好，单位 CSS px。 */
 export interface RowLayoutItem {
@@ -23,6 +23,8 @@ export interface RowLayoutItem {
   translationWidthPx: number | null
   /** 字级行自然宽，没有字级时间戳时传 null。 */
   wordRowWidthPx: number | null
+  /** 微型时间轴上的字级卡片盒，原样透传给 `layoutBlock`。 */
+  wordChips?: readonly WordChipBox[] | null
   /** 卡片形态，缺省 `'line'`；原样透传给 `layoutBlock`。 */
   mode?: BlockCardMode
   /** 是否允许降级，缺省取全局开关；原样透传给 `layoutBlock`。 */

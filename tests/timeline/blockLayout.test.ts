@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from 'vitest'
-import { layoutBlock, BLOCK_CHROME_X_PX } from '@ui/timeline/blockLayout'
+import { layoutBlock, layoutWordChips, BLOCK_CHROME_X_PX } from '@ui/timeline/blockLayout'
 import {
   BLOCK_GAP_PX,
   MIN_BLOCK_WIDTH_PX,
@@ -201,5 +201,104 @@ describe('layoutBlock · word 模式与降级', () => {
     expect(result.widthPx).toBe(WORD_MIN_WIDTH)
     expect(result.widthPx).toBe(52)
     expect(result.overlapsNext).toBe(true)
+  })
+})
+
+describe('layoutWordChips · 微型时间轴坐标', () => {
+  test('q1. 有时间戳：left = round((timeMs - startMs) × pixelsPerMs)', () => {
+    const boxes = layoutWordChips([30, 40], [12_000, 13_600], 12_000, 0.5)
+
+    expect(boxes).toEqual([
+      { leftPx: 0, widthPx: 30 },
+      { leftPx: 800, widthPx: 40 },
+    ])
+  })
+
+  test('q2. 时间早于行起点：left 为负数，不做碰撞截断', () => {
+    const boxes = layoutWordChips([20, 20], [11_970, 12_000], 12_000, 0.5)
+
+    expect(boxes).toEqual([
+      { leftPx: -15, widthPx: 20 },
+      { leftPx: 0, widthPx: 20 },
+    ])
+  })
+
+  test('q3. 无时间戳：按顺序紧贴当前最大右缘 + 2px 排布', () => {
+    const boxes = layoutWordChips([30, 40, 20], [null, null, null], 0, 0.5)
+
+    expect(boxes).toEqual([
+      { leftPx: 2, widthPx: 30 },
+      { leftPx: 34, widthPx: 40 },
+      { leftPx: 76, widthPx: 20 },
+    ])
+  })
+
+  test('q4. 时间戳与缺省混排：缺省字接在已有右缘之后', () => {
+    const boxes = layoutWordChips([20, 10], [1000, null], 1000, 1)
+
+    expect(boxes).toEqual([
+      { leftPx: 0, widthPx: 20 },
+      { leftPx: 22, widthPx: 10 },
+    ])
+  })
+})
+
+describe('layoutBlock · wordChips 绝对定位口径', () => {
+  /** word 模式只补左右边框：1 + 1 = 2（右侧不再留 padding）。 */
+  const WORD_PAD = 2
+
+  test('r1. 正向偏移：内容宽 = 卡片最大右缘 + wordPad', () => {
+    const result = layoutBlock(
+      input({
+        mode: 'word',
+        wordChips: [
+          { leftPx: 100, widthPx: 40 },
+          { leftPx: 160, widthPx: 30 },
+        ],
+      }),
+    )
+
+    expect(result.wordMaxRightPx).toBe(190)
+    expect(result.wordMinLeftPx).toBe(0)
+    expect(result.contentWidthPx).toBe(190 + WORD_PAD)
+    expect(result.widthPx).toBe(190 + WORD_PAD)
+  })
+
+  test('r2. 负向偏移：内容宽仍只由最大右缘决定，wordMinLeftPx 记录负值', () => {
+    const result = layoutBlock(
+      input({ mode: 'word', wordChips: [{ leftPx: -50, widthPx: 60 }] }),
+    )
+
+    expect(result.wordMaxRightPx).toBe(10)
+    expect(result.wordMinLeftPx).toBe(-50)
+    expect(result.contentWidthPx).toBe(10 + WORD_PAD)
+    // 10 + 2 = 12 < 保底 40，宽度抬到 40。
+    expect(result.widthPx).toBe(MIN_BLOCK_WIDTH_PX)
+  })
+
+  test('r3. cap 很小也不压缩、不降级：宽度等于内容宽并标记重叠', () => {
+    // timeGap = 50，cap = 46；内容宽 = 160 + 2 = 162。
+    const result = layoutBlock(
+      input({
+        mode: 'word',
+        wordChips: [{ leftPx: 100, widthPx: 60 }],
+        nextStartMs: 50,
+        pixelsPerMs: 1,
+        degradeEnabled: true,
+      }),
+    )
+
+    expect(result.contentWidthPx).toBe(162)
+    expect(result.widthPx).toBe(162)
+    expect(result.isCompressed).toBe(false)
+    expect(result.isDegraded).toBe(false)
+    expect(result.overlapsNext).toBe(true)
+  })
+
+  test('r4. 空数组 wordChips：回落到旧的流式口径', () => {
+    const withOld = layoutBlock(input({ mode: 'word', wordRowWidthPx: 76 }))
+    const withEmpty = layoutBlock(input({ mode: 'word', wordRowWidthPx: 76, wordChips: [] }))
+
+    expect(withEmpty).toEqual(withOld)
   })
 })

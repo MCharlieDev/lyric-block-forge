@@ -51,6 +51,8 @@ export interface LineWidths {
   translationWidthPx: number | null
   /** word 模式 chip 行自然宽；未传 `wordTexts` 或为空时为 null。 */
   wordRowWidthPx: number | null
+  /** word 模式下每个 chip 的独立宽度（含自身 padding，不含间隔）；未传或为空时为 null。 */
+  wordChipWidthsPx: number[] | null
 }
 
 /** 徽标之间的间距（对应 DOM 的 `gap-1`），每个徽标前计一次。 */
@@ -63,7 +65,7 @@ const BADGE_PADDING_X_PX = 8
 const CHIP_PADDING_X_PX = 8
 
 /** word 模式 chip 之间的间距（对应 DOM 的 `gap-0.5`）。 */
-const CHIP_GAP_PX = 2
+export const CHIP_GAP_PX = 2
 
 /**
  * 纯函数：由注入的测量函数算出单行各项宽度。
@@ -94,23 +96,22 @@ export function computeLineWidths(input: LineMeasureInput, measure: MeasureTextF
   const wordTexts = input.wordTexts
   const wordTimeTexts = input.wordTimeTexts
   let wordRowWidthPx: number | null = null
+  let wordChipWidthsPx: number[] | null = null
   if (wordTexts !== undefined && wordTexts.length > 0) {
+    wordChipWidthsPx = wordTexts.map((chipText, index) => {
+      const timeText = wordTimeTexts?.[index]
+      return Math.max(
+        measure(chipText, 'chip') + CHIP_PADDING_X_PX,
+        timeText ? measure(timeText, 'badge') + CHIP_PADDING_X_PX : 0,
+        WORD_CHIP_MIN_WIDTH_PX,
+      )
+    })
     wordRowWidthPx =
-      wordTexts.reduce((sum, chipText, index) => {
-        const timeText = wordTimeTexts?.[index]
-        return (
-          sum +
-          Math.max(
-            measure(chipText, 'chip') + CHIP_PADDING_X_PX,
-            timeText ? measure(timeText, 'badge') + CHIP_PADDING_X_PX : 0,
-            WORD_CHIP_MIN_WIDTH_PX,
-          )
-        )
-      }, 0) +
+      wordChipWidthsPx.reduce((sum, widthPx) => sum + widthPx, 0) +
       CHIP_GAP_PX * (wordTexts.length - 1)
   }
 
-  return { bodyWidthPx, infoRowWidthPx, translationWidthPx, wordRowWidthPx }
+  return { bodyWidthPx, infoRowWidthPx, translationWidthPx, wordRowWidthPx, wordChipWidthsPx }
 }
 
 /** 各样式对应的探针 class，必须与 `LyricBlock` 内真实元素的排版类保持一致。 */
