@@ -18,7 +18,7 @@ import {
   SNAP_PX,
 } from './constants'
 import { LyricBlock, type SelectModifiers } from './LyricBlock'
-import { layoutBlock } from './blockLayout'
+import { layoutRows } from './rowLayout'
 import { measureLineWidths } from './textMeasure'
 import { formatTimecode } from '../utils/format'
 import { adaptiveGridMs } from './timeMap'
@@ -254,36 +254,13 @@ export function LyricTrack() {
   rowsRef.current = rows
 
   /**
-   * 两行贪心分配：按起点遍历，找第一个"上一块已经让开"的行；
-   * 两行都占着就退而求其次放到当前结束更早的那行（保证视觉上错开）。
-   * 判定直接用像素边界（`上一块右边缘 <= 本块左边缘` 即允许同排），
-   * 块宽已由 {@link layoutBlock} 扣掉块间隙，所以这里不再额外留缝。
+   * 两阶段排版（见 {@link layoutRows}）：
+   * - 第一阶段只用「无下一块」的内容上界占位定行号，首行空位优先，两行都占时选占位右缘更早的一行；
+   * - 第二阶段只看同行邻居压缩宽度，并按同行最终几何判定重叠。
+   * 测量每行只做一次，结果直接复用给纯函数。
    */
   const laidOut = useMemo<LaidOutRow[]>(() => {
-    const pixelsPerMs = snapshot.pixelsPerMs
-    const durationMs = snapshot.durationMs
-    const lastEndPx: number[] = new Array<number>(LYRIC_ROW_COUNT).fill(Number.NEGATIVE_INFINITY)
-    const rowIndexOf = new Array<number>(rows.length).fill(0)
-    const widthOf = new Array<number>(rows.length).fill(0)
-    const overlapsOf = new Array<boolean>(rows.length).fill(false)
-
-    const ordered = rows
-      .map((row, index) => ({ row, index }))
-      .sort((a, b) => a.row.startMs - b.row.startMs || a.index - b.index)
-
-    // 一次反向扫描：对每个起点记录「严格大于它的下一个不同起点」
-    const nextStartByMs = new Map<number, number | null>()
-    let nextLarger: number | null = null
-    for (let cursor = ordered.length - 1; cursor >= 0; cursor -= 1) {
-      const currentMs = ordered[cursor].row.startMs
-      if (nextLarger === null || nextLarger > currentMs) {
-        nextStartByMs.set(currentMs, nextLarger)
-        nextLarger = currentMs
-      }
-    }
-
-    for (const { row, index } of ordered) {
-      const startPx = row.startMs * pixelsPerMs
+    const measured = rows.map((row) => {
       const widths = measureLineWidths({
         text: row.line.text,
         translation: row.line.translation,
@@ -292,50 +269,30 @@ export function LyricTrack() {
         hasWords: row.line.wordTimestamps.length > 0,
         hasTranslation: Boolean(row.line.translation),
       })
-      const layout = layoutBlock({
+      return {
+        startMs: row.startMs,
         bodyWidthPx: widths.bodyWidthPx,
         infoRowWidthPx: widths.infoRowWidthPx,
         translationWidthPx: widths.translationWidthPx,
         wordRowWidthPx: null,
-        startMs: row.startMs,
-        // 没有下一行时，用时间轴总长当虚拟右边界；起点已在总长之外则不限宽
-        nextStartMs:
-          nextStartByMs.get(row.startMs) ?? (row.startMs < durationMs ? durationMs : null),
-        pixelsPerMs,
-      })
-      widthOf[index] = layout.widthPx
-      const endPx = startPx + layout.widthPx
-
-      let target = -1
-      for (let candidate = 0; candidate < LYRIC_ROW_COUNT; candidate += 1) {
-        if (lastEndPx[candidate] <= startPx) {
-          target = candidate
-          break
-        }
-      }
-      if (target === -1) {
-        target = 0
-        for (let candidate = 1; candidate < LYRIC_ROW_COUNT; candidate += 1) {
-          if (lastEndPx[candidate] < lastEndPx[target]) target = candidate
-        }
-      }
-      // 几何重叠判定：必须在更新本行右边缘之前取；空行时为 -Infinity，比较自然为 false
-      overlapsOf[index] = startPx < lastEndPx[target]
-      rowIndexOf[index] = target
-      lastEndPx[target] = Math.max(lastEndPx[target], endPx)
-    }
-
-    return rows.map((row, index) => {
-      const startPx = row.startMs * pixelsPerMs
-      return {
-        row,
-        rowIndex: rowIndexOf[index],
-        startPx,
-        widthPx: widthOf[index],
-        endPx: startPx + widthOf[index],
-        overlapsPrev: overlapsOf[index],
       }
     })
+
+    const entries = layoutRows(
+      measured,
+      snapshot.pixelsPerMs,
+      snapshot.durationMs,
+      LYRIC_ROW_COUNT,
+    )
+
+    return rows.map((row, index) => ({
+      row,
+      rowIndex: entries[index].rowIndex,
+      startPx: entries[index].startPx,
+      widthPx: entries[index].widthPx,
+      endPx: entries[index].endPx,
+      overlapsPrev: entries[index].overlapsPrev,
+    }))
   }, [rows, snapshot.pixelsPerMs, snapshot.durationMs])
 
   // 横向虚拟滚动：只保留与渲染窗口相交的块
