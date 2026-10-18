@@ -24,6 +24,20 @@ export function formatTimecode(ms: number): string {
 }
 
 /**
+ * 格式化为放大态迷你卡的短时间码 `ss.xx`（百分秒），舍弃分钟。
+ *
+ * @param ms 毫秒；`null` 表示该 chip 没有时间戳
+ * @returns 形如 `12.08` 的字符串；无时间戳返回 `--`
+ */
+export function formatMiniTime(ms: number | null): string {
+  if (ms === null) return '--'
+  const safe = Math.max(0, ms)
+  const seconds = Math.floor((safe % 60000) / 1000)
+  const centis = Math.floor((safe % 1000) / 10)
+  return `${pad(seconds)}.${pad(centis)}`
+}
+
+/**
  * 格式化为播放器风格时长 `mm:ss.mmm`（毫秒）。
  *
  * @param ms 毫秒

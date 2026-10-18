@@ -16,11 +16,14 @@ import {
   LYRIC_ROW_HEIGHT_PX,
   LYRIC_TRACK_HEIGHT_PX,
   SNAP_PX,
+  WORD_CARD_PIXELS_PER_MS,
 } from './constants'
 import { LyricBlock, type SelectModifiers } from './LyricBlock'
-import { layoutRows } from './rowLayout'
+import type { BlockCardMode } from './blockLayout'
+import { deriveDisplayChips, type DisplayChip } from './displayChips'
+import { layoutRows, type RowLayoutItem } from './rowLayout'
 import { measureLineWidths } from './textMeasure'
-import { formatTimecode } from '../utils/format'
+import { formatMiniTime, formatTimecode } from '../utils/format'
 import { adaptiveGridMs } from './timeMap'
 import { lineIsMovable, selectVisibleLines, useEditorStore } from '../stores/editorStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -37,6 +40,8 @@ interface RowModel {
   times: number[]
   /** 字级时间戳（回放后），缺项为 `null` */
   wordTimes: Array<number | null>
+  /** 字级 chip（同时间合并后的显示单元，供放大态使用） */
+  chips: DisplayChip[]
   /** 块起点（毫秒） */
   startMs: number
   /** 块时长（毫秒） */
@@ -58,6 +63,10 @@ interface LaidOutRow {
   endPx: number
   /** 是否与同排前一块有像素交叠（几何真值，非 `layoutBlock.overlapsNext`） */
   overlapsPrev: boolean
+  /** 卡片形态（放大态为 `word`） */
+  mode: BlockCardMode
+  /** 是否降级为极窄的菱形关键帧 */
+  isDegraded: boolean
 }
 
 /** 在升序数组里找第一个严格大于 `value` 的元素，找不到返回 `null`。 */
@@ -221,11 +230,17 @@ export function LyricTrack() {
   const getPlayheadMs = useCallback(() => adapters.audio.getCurrentTimeMs(), [adapters])
 
   const rows = useMemo<RowModel[]>(() => {
-    const base = lines.map((line) => ({
-      line,
-      times: getReplayedLineTimes(replay, line.id),
-      wordTimes: line.wordTimestamps.map((_, index) => getReplayedWordTime(replay, line.id, index)),
-    }))
+    const base = lines.map((line) => {
+      const wordTimes = line.wordTimestamps.map((_, index) =>
+        getReplayedWordTime(replay, line.id, index),
+      )
+      return {
+        line,
+        times: getReplayedLineTimes(replay, line.id),
+        wordTimes,
+        chips: deriveDisplayChips(line.wordTimestamps, wordTimes),
+      }
+    })
 
     const sortedStarts = base
       .map((item) => (item.times.length > 0 ? item.times[0] : null))
@@ -260,7 +275,9 @@ export function LyricTrack() {
    * 测量每行只做一次，结果直接复用给纯函数。
    */
   const laidOut = useMemo<LaidOutRow[]>(() => {
-    const measured = rows.map((row) => {
+    const isExpanded = snapshot.pixelsPerMs >= WORD_CARD_PIXELS_PER_MS
+    const measured: RowLayoutItem[] = rows.map((row) => {
+      const wordMode = isExpanded && row.chips.length > 0
       const widths = measureLineWidths({
         text: row.line.text,
         translation: row.line.translation,
@@ -268,13 +285,17 @@ export function LyricTrack() {
         extraCount: Math.max(0, row.times.length - 1),
         hasWords: row.line.wordTimestamps.length > 0,
         hasTranslation: Boolean(row.line.translation),
+        wordTexts: wordMode ? row.chips.map((chip) => chip.text) : undefined,
+        wordTimeTexts: wordMode ? row.chips.map((chip) => formatMiniTime(chip.timeMs)) : undefined,
       })
       return {
         startMs: row.startMs,
         bodyWidthPx: widths.bodyWidthPx,
         infoRowWidthPx: widths.infoRowWidthPx,
         translationWidthPx: widths.translationWidthPx,
-        wordRowWidthPx: null,
+        wordRowWidthPx: wordMode ? widths.wordRowWidthPx : null,
+        mode: wordMode ? 'word' : 'line',
+        degradeEnabled: wordMode,
       }
     })
 
@@ -292,8 +313,14 @@ export function LyricTrack() {
       widthPx: entries[index].widthPx,
       endPx: entries[index].endPx,
       overlapsPrev: entries[index].overlapsPrev,
+      mode: measured[index].mode ?? 'line',
+      isDegraded: entries[index].isDegraded,
     }))
   }, [rows, snapshot.pixelsPerMs, snapshot.durationMs])
+
+  // 拖动状态机在按下瞬间读最新排版结果（判定 word / 降级），避免为它重绑事件
+  const laidOutRef = useRef<LaidOutRow[]>(laidOut)
+  laidOutRef.current = laidOut
 
   // 横向虚拟滚动：只保留与渲染窗口相交的块
   const windowStartPx = snapshot.windowStartMs * snapshot.pixelsPerMs
@@ -433,6 +460,15 @@ export function LyricTrack() {
     return targets
   }
 
+  /** 位移 → 吸附结果（move 与 up 共用同一口径）。 */
+  const calculateSnapAndOffset = (rawPx: number, session: DragSession): SnapResult =>
+    snapOffsetPx(
+      rawPx,
+      session.pressedStartMs,
+      collectTargetsMs(session.excludeTimesMs),
+      snapshot.pixelsPerMs,
+    )
+
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
     // 防御性重置：上一轮若异常退出，辅助线可能还残留
     hideGuide()
@@ -445,6 +481,8 @@ export function LyricTrack() {
     if (blockEl === null) return
     const pressedLineId = blockEl.dataset.lineId
     if (pressedLineId === undefined) return
+    const pressedLayout = laidOutRef.current.find((item) => item.row.line.id === pressedLineId)
+    const isDegraded = pressedLayout?.isDegraded === true
     // 拦住默认行为，避免拖动时选中文字
     event.preventDefault()
 
@@ -454,7 +492,7 @@ export function LyricTrack() {
       shift: event.shiftKey,
     }
 
-    // 有修饰键：只记「点击待发」，不建拖动会话（松手时按点选语义派发）
+    // 有修饰键：只记「点击待发」，不建拖动会话
     if (modifiers.ctrl || modifiers.meta || modifiers.shift) {
       dragRef.current = {
         pointerId: event.pointerId,
@@ -472,6 +510,10 @@ export function LyricTrack() {
         followSuspended: false,
       }
       event.currentTarget.setPointerCapture(event.pointerId)
+      // 降级块整块即把手：按下即把辅助线钉在块左缘，松手再隐藏
+      if (isDegraded && pressedLayout !== undefined) {
+        showGuide(pressedLayout.row.startMs)
+      }
       return
     }
 
@@ -521,6 +563,10 @@ export function LyricTrack() {
     dragRef.current = session
     // 捕获指针：拖动中指针移出块也照样收到 move / up
     event.currentTarget.setPointerCapture(event.pointerId)
+    // 降级块整块即把手：按下即把辅助线钉在块左缘（被阻止的拖动不显示）
+    if (mode !== 'blocked' && isDegraded && pressedLayout !== undefined) {
+      showGuide(pressedLayout.row.startMs)
+    }
   }
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
@@ -541,12 +587,7 @@ export function LyricTrack() {
       }
     }
     if (session.mode === 'blocked') return
-    const { offsetPx, snappedMs } = snapOffsetPx(
-      rawPx,
-      session.pressedStartMs,
-      collectTargetsMs(session.excludeTimesMs),
-      snapshot.pixelsPerMs,
-    )
+    const { offsetPx, snappedMs } = calculateSnapAndOffset(rawPx, session)
     moveNodes(session, offsetPx)
     if (snappedMs === null) hideGuide()
     else showGuide(snappedMs)
@@ -621,12 +662,8 @@ export function LyricTrack() {
     }
 
     const rawPx = event.clientX - session.startClientX
-    const { offsetPx } = snapOffsetPx(
-      rawPx,
-      session.pressedStartMs,
-      collectTargetsMs(session.excludeTimesMs),
-      snapshot.pixelsPerMs,
-    )
+    // 与 move 完全同口径，避免松手落点与拖动预览不一致
+    const { offsetPx } = calculateSnapAndOffset(rawPx, session)
 
     if (session.mode === 'single' && session.pressedIsUntimed) {
       // 单块未打轴：落点 = 原占位起点 + 位移，与原占位的差就是本次实际移动（保留既有语义，二.8）
@@ -754,6 +791,9 @@ export function LyricTrack() {
             widthPx={item.widthPx}
             topPx={item.rowIndex * LYRIC_ROW_HEIGHT_PX}
             overlapsPrev={item.overlapsPrev}
+            mode={item.mode}
+            chips={item.row.chips}
+            isDegraded={item.isDegraded}
           />
         ))}
       </div>

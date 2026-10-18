@@ -34,6 +34,11 @@ export interface LineMeasureInput {
    * 不传或空数组时 `wordRowWidthPx` 为 null；line 模式不传。
    */
   wordTexts?: readonly string[]
+  /**
+   * word 模式下的 chip 时间戳文本（`ss.xx`），与 `wordTexts` 按下标一一对应。
+   * 缺项或短于 `wordTexts` 时该 chip 不计时间戳宽。
+   */
+  wordTimeTexts?: readonly string[]
 }
 
 /** 单行的自然宽结果，全部不含块的 padding / border。 */
@@ -84,17 +89,24 @@ export function computeLineWidths(input: LineMeasureInput, measure: MeasureTextF
 
   const translationWidthPx = input.translation ? measure(input.translation, 'translation') : null
 
-  // word 模式 chip 行：每个 chip 取「文本宽 + 左右 padding」与最小宽的较大者，
+  // word 模式 chip 行：每个 chip 取「歌词宽 / 时间戳宽分别加 padding」与最小宽的较大者，
   // chip 之间再加间隔。不含把手与块 chrome，由 blockLayout 负责相加。
   const wordTexts = input.wordTexts
+  const wordTimeTexts = input.wordTimeTexts
   let wordRowWidthPx: number | null = null
   if (wordTexts !== undefined && wordTexts.length > 0) {
     wordRowWidthPx =
-      wordTexts.reduce(
-        (sum, chipText) =>
-          sum + Math.max(measure(chipText, 'chip') + CHIP_PADDING_X_PX, WORD_CHIP_MIN_WIDTH_PX),
-        0,
-      ) +
+      wordTexts.reduce((sum, chipText, index) => {
+        const timeText = wordTimeTexts?.[index]
+        return (
+          sum +
+          Math.max(
+            measure(chipText, 'chip') + CHIP_PADDING_X_PX,
+            timeText ? measure(timeText, 'badge') + CHIP_PADDING_X_PX : 0,
+            WORD_CHIP_MIN_WIDTH_PX,
+          )
+        )
+      }, 0) +
       CHIP_GAP_PX * (wordTexts.length - 1)
   }
 

@@ -1,6 +1,8 @@
 import type { LyricLine } from '@core'
 import { LYRIC_ROW_HEIGHT_PX, WORD_CHIP_MIN_WIDTH_PX } from './constants'
-import { formatTimecode } from '../utils/format'
+import type { BlockCardMode } from './blockLayout'
+import type { DisplayChip } from './displayChips'
+import { formatMiniTime, formatTimecode } from '../utils/format'
 
 /** 点选歌词块时按下的修饰键。由轨道从 PointerEvent 上取，交回选择语义分派。 */
 export interface SelectModifiers {
@@ -38,6 +40,12 @@ interface LyricBlockProps {
   topPx: number
   /** 是否与同排前一块有像素交叠（由轨道按几何边界判定） */
   overlapsPrev: boolean
+  /** 卡片形态：放大态且有字级时为 `word`，其余为 `line` */
+  mode: BlockCardMode
+  /** 字级显示 chip（已按时间升序、同时间合并），仅 `word` 模式渲染 */
+  chips: DisplayChip[]
+  /** 是否降级为极窄的菱形关键帧（整块即拖动把手） */
+  isDegraded: boolean
 }
 
 /** 块相对行顶部的内缩，避免块与行的底纹贴边。 */
@@ -77,6 +85,9 @@ export function LyricBlock({
   widthPx,
   topPx,
   overlapsPrev,
+  mode,
+  chips,
+  isDegraded,
 }: LyricBlockProps) {
   const hasWords = line.wordTimestamps.length > 0
   const extraCount = times.length > 1 ? times.length - 1 : 0
@@ -99,10 +110,14 @@ export function LyricBlock({
       tabIndex={-1}
       // 供轨道事件委托判定「点到的是块还是空白」（closest 查这个属性）
       data-lyric-block=""
+      // 降级块整块即拖动把手；word 模式由顶部横条带该属性
+      data-drag-handle={isDegraded ? '' : undefined}
       // 供轨道事件委托定位具体行（拖动 / 点选都靠它取行 ID）
       data-line-id={line.id}
       title={`${line.text}${isUntimed ? '（未打轴）' : ` · ${formatTimecode(startMs)}`}`}
-      className={`absolute flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-left transition-colors select-none touch-none ${
+      className={`absolute flex cursor-grab ${
+        mode === 'word' ? 'flex-row items-stretch pl-0 pr-1.5' : 'flex-col justify-center px-1.5'
+      } overflow-hidden rounded border text-left transition-colors select-none touch-none ${
         // 强调优先：选中态覆盖未打轴的虚线底纹；层级 选中 9 > hover 8 > 普通 auto
         isActive
           ? `z-[9] border-accent bg-[#253450] ${seamClass}`
@@ -128,42 +143,79 @@ export function LyricBlock({
         height: `${LYRIC_ROW_HEIGHT_PX - BLOCK_INSET_PX * 2}px`,
       }}
     >
-      <span className="flex w-full items-center gap-1 truncate font-mono text-[10px] leading-none text-neutral-400">
-        <span className={isUntimed ? 'text-neutral-600' : 'text-neutral-300'}>
-          {times.length === 0 ? '--:--.--' : formatTimecode(times[0])}
+      {isDegraded ? (
+        // 降级态：极窄块只留一个菱形关键帧，块的其余内容一概不渲染
+        <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <span
+            className="block rotate-45 rounded-[1px] bg-accent"
+            style={{ width: 8, height: 8 }}
+          />
         </span>
-        {extraCount > 0 ? (
-          <span className="rounded bg-white/10 px-1 text-[9px] text-neutral-400">+{extraCount}</span>
-        ) : null}
-        {hasWords ? <span className="rounded bg-accent/20 px-1 text-[9px] text-accent">字级</span> : null}
-        {line.translation !== undefined ? (
-          <span className="rounded bg-white/10 px-1 text-[9px] text-neutral-400">双语</span>
-        ) : null}
-      </span>
-
-      <span className="mt-0.5 w-full truncate text-xs leading-tight text-neutral-100">{line.text}</span>
-
-      {hasWords ? (
-        <span className="mt-0.5 flex w-full gap-0.5 overflow-hidden">
-          {line.wordTimestamps.map((word, index) => (
-            <span
-              key={`${line.id}-w${index}`}
-              className="truncate rounded-sm bg-white/5 px-1 text-[10px] leading-tight text-neutral-300"
-              style={{
-                flexGrow: chipSpans[index],
-                flexBasis: 0,
-                minWidth: `${WORD_CHIP_MIN_WIDTH_PX}px`,
-              }}
-            >
-              {word.text}
+      ) : mode === 'word' ? (
+        // 放大态：顶部横条即拖动把手 + 迷你卡（上排时间戳、下排歌词）
+        <>
+          <span
+            data-drag-handle=""
+            aria-hidden
+            className="absolute inset-x-0 top-0 z-[1] h-1 cursor-grab rounded-t bg-white/10"
+          />
+          <div className="flex min-h-0 flex-1 items-stretch gap-0.5 overflow-hidden pt-1">
+            {chips.map((chip, index) => (
+              <div
+                key={`${line.id}-c${index}`}
+                className="flex min-w-0 flex-col items-start justify-center gap-0.5 overflow-hidden rounded-sm bg-white/5 px-1 ring-1 ring-inset ring-white/10 transition-colors hover:bg-white/10"
+                style={{ minWidth: 22, flex: '0 1 auto' }}
+              >
+                <span className="w-full truncate text-left font-mono text-[9px] leading-none text-neutral-500">
+                  {formatMiniTime(chip.timeMs)}
+                </span>
+                <span className="w-full truncate text-left text-xs leading-none text-neutral-200">
+                  {chip.text}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <span className="flex w-full items-center gap-1 truncate font-mono text-[10px] leading-none text-neutral-400">
+            <span className={isUntimed ? 'text-neutral-600' : 'text-neutral-300'}>
+              {times.length === 0 ? '--:--.--' : formatTimecode(times[0])}
             </span>
-          ))}
-        </span>
-      ) : null}
+            {extraCount > 0 ? (
+              <span className="rounded bg-white/10 px-1 text-[9px] text-neutral-400">+{extraCount}</span>
+            ) : null}
+            {hasWords ? <span className="rounded bg-accent/20 px-1 text-[9px] text-accent">字级</span> : null}
+            {line.translation !== undefined ? (
+              <span className="rounded bg-white/10 px-1 text-[9px] text-neutral-400">双语</span>
+            ) : null}
+          </span>
 
-      {line.translation !== undefined ? (
-        <span className="w-full truncate text-[10px] leading-tight text-neutral-400">{line.translation}</span>
-      ) : null}
+          <span className="mt-0.5 w-full truncate text-xs leading-tight text-neutral-100">{line.text}</span>
+
+          {hasWords ? (
+            <span className="mt-0.5 flex w-full gap-0.5 overflow-hidden">
+              {line.wordTimestamps.map((word, index) => (
+                <span
+                  key={`${line.id}-w${index}`}
+                  className="truncate rounded-sm bg-white/5 px-1 text-[10px] leading-tight text-neutral-300"
+                  style={{
+                    flexGrow: chipSpans[index],
+                    flexBasis: 0,
+                    minWidth: `${WORD_CHIP_MIN_WIDTH_PX}px`,
+                  }}
+                >
+                  {word.text}
+                </span>
+              ))}
+            </span>
+          ) : null}
+
+          {line.translation !== undefined ? (
+            <span className="w-full truncate text-[10px] leading-tight text-neutral-400">{line.translation}</span>
+          ) : null}
+        </>
+      )}
     </div>
   )
 }

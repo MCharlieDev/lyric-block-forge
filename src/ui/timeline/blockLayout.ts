@@ -14,8 +14,6 @@ import {
   WORD_CARD_DEGRADED_WIDTH_PX,
   WORD_CARD_DEGRADE_CAP_PX,
   WORD_CARD_DEGRADE_ENABLED,
-  WORD_CARD_HANDLE_GAP_PX,
-  WORD_CARD_HANDLE_WIDTH_PX,
   WORD_CHIP_MIN_WIDTH_PX,
 } from './constants'
 
@@ -60,9 +58,9 @@ export interface BlockLayoutInput {
 
 /** `layoutBlock` 的输出。 */
 export interface BlockLayoutResult {
-  /** 内容自然宽：line 取正文/信息行/译文的较大者，word 只取把手 + chip 行；均加 padding / border。 */
+  /** 内容自然宽：line 取正文/信息行/译文的较大者，word 只取 chip 行；均加 padding / border。 */
   contentWidthPx: number
-  /** 保底宽：line 至少装得下信息行，word 至少装得下把手 + 最小 chip；均不小于 `MIN_BLOCK_WIDTH_PX`。 */
+  /** 保底宽：line 至少装得下信息行，word 至少装得下最小 chip；均不小于 `MIN_BLOCK_WIDTH_PX`。 */
   minWidthPx: number
   /** 最终写入样式的块宽。 */
   widthPx: number
@@ -103,15 +101,12 @@ export function layoutBlock(input: BlockLayoutInput): BlockLayoutResult {
   let minWidthPx: number
 
   if (mode === 'word') {
-    // 放大态：内容宽只由「把手 + 间隔 + chip 行」决定，不得再纳入正文/信息行/译文。
-    const contentInner =
-      (wordRowWidthPx ?? 0) + WORD_CARD_HANDLE_WIDTH_PX + WORD_CARD_HANDLE_GAP_PX
-    contentWidthPx = contentInner + pad
-    // 最小可用宽 = 把手 + 间隔 + 最小 chip + chrome = 52。
-    minWidthPx = Math.max(
-      MIN_BLOCK_WIDTH_PX,
-      WORD_CARD_HANDLE_WIDTH_PX + WORD_CARD_HANDLE_GAP_PX + WORD_CHIP_MIN_WIDTH_PX + pad,
-    )
+    // 放大态：内容宽只由 chip 行决定，不得再纳入正文/信息行/译文。
+    // 左边缘必须与 startMs 对齐：无左侧把手，chrome = 左 border 1 + 右 padding 6 + 右 border 1。
+    const wordPad = BLOCK_PADDING_SIDE_PX + BLOCK_BORDER_SIDE_PX * 2
+    contentWidthPx = (wordRowWidthPx ?? 0) + wordPad
+    // 最小可用宽 = 最小 chip + chrome = max(40, 30) = 40。
+    minWidthPx = Math.max(MIN_BLOCK_WIDTH_PX, WORD_CHIP_MIN_WIDTH_PX + wordPad)
   } else {
     const contentInner = Math.max(bodyWidthPx, infoRowWidthPx, translationWidthPx ?? 0)
     contentWidthPx = contentInner + pad

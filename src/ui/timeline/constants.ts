@@ -157,19 +157,13 @@ export const WORD_CHIP_MIN_WIDTH_PX = 22
  */
 export const WORD_CARD_PIXELS_PER_MS = 0.3
 
-/** word 模式左侧拖动把手的宽度（像素）。 */
-export const WORD_CARD_HANDLE_WIDTH_PX = 12
-
-/** 把手与 chip 区之间的间隔（像素），对应 DOM 的 `gap-1`。 */
-export const WORD_CARD_HANDLE_GAP_PX = 4
-
 /**
  * 降级阈值（像素，按**块总宽**计）：同行下一块的间距 cap 小于它时，
  * 整行降级为极窄块，避免重叠或硬截断。
  *
- * 数值 = 把手 12 + 间隔 4 + 最小 chip 22 + 左右 chrome 14 = 52。
+ * 数值 = 最小 chip 22 + chrome 8 = 40。
  */
-export const WORD_CARD_DEGRADE_CAP_PX = 52
+export const WORD_CARD_DEGRADE_CAP_PX = 40
 
 /** 降级块的总宽（像素），兼作菱形命中盒宽度。 */
 export const WORD_CARD_DEGRADED_WIDTH_PX = 14

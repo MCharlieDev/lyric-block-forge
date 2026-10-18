@@ -136,6 +136,46 @@ describe('computeLineWidths · word 模式 chip 行', () => {
 
     expect(result.wordRowWidthPx).toBe(WORD_CHIP_MIN_WIDTH_PX)
   })
+
+  test('m. 时间戳更宽时取时间戳宽 + 8', () => {
+    const measure = createFixedMeasure({ a: 5, '12.08': 60 })
+    const result = computeLineWidths(
+      input({ wordTexts: ['a'], wordTimeTexts: ['12.08'] }),
+      measure,
+    )
+
+    // max(5+8, 60+8, 22) = 68
+    expect(result.wordRowWidthPx).toBe(68)
+  })
+
+  test('n. 歌词更宽时仍取歌词宽 + 8', () => {
+    const measure = createFixedMeasure({ abcd: 40, '12.08': 30 })
+    const result = computeLineWidths(
+      input({ wordTexts: ['abcd'], wordTimeTexts: ['12.08'] }),
+      measure,
+    )
+
+    // max(40+8, 30+8, 22) = 48
+    expect(result.wordRowWidthPx).toBe(48)
+  })
+
+  test('o. 时间戳缺项时该 chip 只按歌词宽计算', () => {
+    const measure = createFixedMeasure({ a: 5, bb: 20, '12.08': 60 })
+    const result = computeLineWidths(
+      input({ wordTexts: ['a', 'bb'], wordTimeTexts: ['12.08'] }),
+      measure,
+    )
+
+    // 第一张 max(5+8, 60+8, 22)=68，第二张 max(20+8, 22)=28，加 2px 间隔 = 98
+    expect(result.wordRowWidthPx).toBe(98)
+  })
+
+  test('p. 时间戳复用 badge 样式测量', () => {
+    const { measure, calls } = createMeasure()
+    computeLineWidths(input({ wordTexts: ['a'], wordTimeTexts: ['12.08'] }), measure)
+
+    expect(calls).toContainEqual(['12.08', 'badge'])
+  })
 })
 
 describe('computeLineWidths · 测量调用契约', () => {
