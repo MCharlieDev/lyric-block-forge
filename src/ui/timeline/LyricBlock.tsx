@@ -36,6 +36,8 @@ interface LyricBlockProps {
    * 由轨道按行号算出（`行号 × 行距`），块自己不推算行位置。
    */
   topPx: number
+  /** 是否与同排前一块有像素交叠（由轨道按几何边界判定） */
+  overlapsPrev: boolean
 }
 
 /** 块相对行顶部的内缩，避免块与行的底纹贴边。 */
@@ -74,6 +76,7 @@ export function LyricBlock({
   pixelsPerMs,
   widthPx,
   topPx,
+  overlapsPrev,
 }: LyricBlockProps) {
   const hasWords = line.wordTimestamps.length > 0
   const extraCount = times.length > 1 ? times.length - 1 : 0
@@ -87,6 +90,9 @@ export function LyricBlock({
     return Math.max(0, (startMs + spanMs) - current)
   })
 
+  /** 叠压接缝：用内阴影标记左边缘，不占布局、不改块宽，选中/多选态同样保留。 */
+  const seamClass = overlapsPrev ? 'shadow-[inset_2px_0_0_0_rgba(76,141,255,0.5)]' : ''
+
   return (
     <div
       // 不在 Tab 序列内：键盘选中由下方歌词块列表承担，避免空格被浏览器默认行为吃掉
@@ -97,14 +103,23 @@ export function LyricBlock({
       data-line-id={line.id}
       title={`${line.text}${isUntimed ? '（未打轴）' : ` · ${formatTimecode(startMs)}`}`}
       className={`absolute flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-left transition-colors select-none touch-none ${
-        // 强调优先：选中态覆盖未打轴的虚线底纹
+        // 强调优先：选中态覆盖未打轴的虚线底纹；层级 选中 9 > hover 8 > 普通 auto
         isActive
-          ? 'border-accent bg-accent/20'
+          ? `z-[9] border-accent bg-[#253450] ${seamClass}`
           : inSelection
-            ? 'border-accent/60 bg-accent/10'
+            ? `z-[9] border-accent/60 bg-[#20293a] ${seamClass}`
             : isUntimed
-              ? 'border-dashed border-divider bg-panel/70 hover:bg-panel'
-              : 'border-divider bg-panel hover:bg-white/5'
+              ? `border-dashed border-divider hover:z-[8] ${
+                  overlapsPrev
+                    ? 'bg-panel/80 backdrop-blur-[1px] shadow-[inset_2px_0_0_0_rgba(76,141,255,0.5)] hover:bg-panel'
+                    : 'bg-panel/70 hover:bg-panel'
+                }`
+              : // 重叠块压在上层：降透明度让下层卡片轮廓透出，hover 时回实色保证可读性
+                `border-divider hover:z-[8] ${
+                  overlapsPrev
+                    ? 'bg-panel/85 backdrop-blur-[1px] shadow-[inset_2px_0_0_0_rgba(76,141,255,0.5)] hover:bg-panel'
+                    : 'bg-panel hover:bg-[#23272f]'
+                }`
       }`}
       style={{
         left: `${startMs * pixelsPerMs}px`,

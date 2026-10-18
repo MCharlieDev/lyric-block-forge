@@ -56,6 +56,8 @@ interface LaidOutRow {
   widthPx: number
   /** 块右边缘（像素，轨道坐标） */
   endPx: number
+  /** 是否与同排前一块有像素交叠（几何真值，非 `layoutBlock.overlapsNext`） */
+  overlapsPrev: boolean
 }
 
 /** 在升序数组里找第一个严格大于 `value` 的元素，找不到返回 `null`。 */
@@ -263,6 +265,7 @@ export function LyricTrack() {
     const lastEndPx: number[] = new Array<number>(LYRIC_ROW_COUNT).fill(Number.NEGATIVE_INFINITY)
     const rowIndexOf = new Array<number>(rows.length).fill(0)
     const widthOf = new Array<number>(rows.length).fill(0)
+    const overlapsOf = new Array<boolean>(rows.length).fill(false)
 
     const ordered = rows
       .map((row, index) => ({ row, index }))
@@ -316,6 +319,8 @@ export function LyricTrack() {
           if (lastEndPx[candidate] < lastEndPx[target]) target = candidate
         }
       }
+      // 几何重叠判定：必须在更新本行右边缘之前取；空行时为 -Infinity，比较自然为 false
+      overlapsOf[index] = startPx < lastEndPx[target]
       rowIndexOf[index] = target
       lastEndPx[target] = Math.max(lastEndPx[target], endPx)
     }
@@ -328,6 +333,7 @@ export function LyricTrack() {
         startPx,
         widthPx: widthOf[index],
         endPx: startPx + widthOf[index],
+        overlapsPrev: overlapsOf[index],
       }
     })
   }, [rows, snapshot.pixelsPerMs, snapshot.durationMs])
@@ -335,7 +341,10 @@ export function LyricTrack() {
   // 横向虚拟滚动：只保留与渲染窗口相交的块
   const windowStartPx = snapshot.windowStartMs * snapshot.pixelsPerMs
   const windowEndPx = snapshot.windowEndMs * snapshot.pixelsPerMs
-  const visibleRows = laidOut.filter((item) => item.endPx > windowStartPx && item.startPx < windowEndPx)
+  const visibleRows = laidOut
+    .filter((item) => item.endPx > windowStartPx && item.startPx < windowEndPx)
+    // 渲染顺序按时间升序：时间靠后的块后绘制、压在上层（同起点由稳定排序保持文档序）
+    .sort((a, b) => a.startPx - b.startPx || a.row.startMs - b.row.startMs)
 
   /** 块点选：Shift 范围选 > Ctrl/Cmd 切换 > 普通单选。 */
   const handleSelectBlock = useCallback(
@@ -589,7 +598,10 @@ export function LyricTrack() {
   /**
    * 松手 / 取消时按设置恢复跟随。
    *
-   * - 真正拖动过（已越阈值）：按设置 A「立刻拉回」（带动画）/ B「进入跟随暂停」；
+   * - 真正拖动过（已越阈值）：
+   *   A「立刻拉回」仅在**播放中**才 snap 拉回（与滚轮收敛、滚动条松手同口径）；
+   *   暂停时只清挂起、视口原地不动，否则会把视口强行拉到播放头 20% 处。
+   *   B「进入跟随暂停」保持原语义，不移动视口。
    * - 只是点击（未越阈值）：仅解除挂起、不动跟随状态，
    *   否则 B 模式下"点选一个块"也会把跟随停掉。
    */
@@ -600,7 +612,15 @@ export function LyricTrack() {
       kernel.clearFollowSuspension()
       return
     }
-    kernel.resumeFollow(useSettingsStore.getState().settings.followResumeMode, adapters.audio.getCurrentTimeMs())
+    const settings = useSettingsStore.getState().settings
+    const playing = useEditorStore.getState().playback.isPlaying
+    if (settings.followResumeMode === 'pause') {
+      kernel.resumeFollow('pause', adapters.audio.getCurrentTimeMs())
+    } else if (playing) {
+      kernel.resumeFollow('snap', adapters.audio.getCurrentTimeMs())
+    } else {
+      kernel.clearFollowSuspension()
+    }
   }
 
   /**
@@ -776,6 +796,7 @@ export function LyricTrack() {
             pixelsPerMs={snapshot.pixelsPerMs}
             widthPx={item.widthPx}
             topPx={item.rowIndex * LYRIC_ROW_HEIGHT_PX}
+            overlapsPrev={item.overlapsPrev}
           />
         ))}
       </div>
