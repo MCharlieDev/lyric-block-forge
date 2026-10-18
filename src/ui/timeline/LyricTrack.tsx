@@ -120,7 +120,7 @@ function snapOffsetPx(
   return { offsetPx: (bestMs - startMs) * pixelsPerMs, snappedMs: bestMs }
 }
 
-/** 一次按下会落入的四种分派模式。 */
+/** 一次按下会落入的五种分派模式。 */
 type DragMode =
   /** 带修饰键的点击：不拖动，松手时按点选语义派发（Ctrl / Shift 由上层分派） */
   | 'click'
@@ -130,6 +130,8 @@ type DragMode =
   | 'single'
   /** 多选拖动：参与集（≥2 行）一起平移 */
   | 'multi'
+  /** 字级拖动：只平移被按字卡（必要时由数据层联动行头） */
+  | 'word'
 
 /** 一次按下的过程状态。整个过程不触发渲染，故放在 ref 里。 */
 interface DragSession {
@@ -158,6 +160,12 @@ interface DragSession {
   blockedEl: HTMLElement | null
   /** 本会话是否已挂起跟随（按块即挂起，松手 / 取消时按设置恢复） */
   followSuspended: boolean
+  /** 字级拖动：所属行 ID（`word` 模式） */
+  wordLineId?: string
+  /** 字级拖动：被拖字卡覆盖的字下标（`word` 模式） */
+  wordIndices?: number[]
+  /** 字级拖动：被按下的字卡节点，位移直接写它的 inline style（`word` 模式） */
+  wordChipEl?: HTMLElement
 }
 
 /** 待确认的一次「重大改变」（多选拖动）：块保留临时位移停在吸附落点，等用户裁决。 */
@@ -204,6 +212,7 @@ export function LyricTrack() {
   const clearLineSelection = useEditorStore((state) => state.clearLineSelection)
   const stampLine = useEditorStore((state) => state.stampLine)
   const moveLinesByOffset = useEditorStore((state) => state.moveLinesByOffset)
+  const nudgeWordsByOffset = useEditorStore((state) => state.nudgeWordsByOffset)
   const adapters = useAdapters()
 
   const planeRef = useRef<HTMLDivElement | null>(null)
@@ -430,6 +439,12 @@ export function LyricTrack() {
       el.style.cursor = ''
     }
     if (session.blockedEl !== null) session.blockedEl.style.cursor = ''
+    // 字级拖动：被拖字卡的位移 / 层级 / 光标一并撤销（pointerup 与 pointercancel 共用）
+    if (session.wordChipEl !== undefined) {
+      session.wordChipEl.style.transform = ''
+      session.wordChipEl.style.zIndex = ''
+      session.wordChipEl.style.cursor = ''
+    }
     hideGuide()
   }
 
@@ -506,6 +521,41 @@ export function LyricTrack() {
       ctrl: event.ctrlKey,
       meta: event.metaKey,
       shift: event.shiftKey,
+    }
+
+    // 放大态按到字卡：进入字级拖动（不参与行级选中与整行平移）。
+    // 无时间戳的字卡（`data-chip-time-ms` 为空）只当普通点击，落到下面的行级分支。
+    const chipEl = (event.target as HTMLElement).closest<HTMLElement>('[data-word-chip]')
+    if (chipEl !== null && pressedLayout?.mode === 'word' && !isDegraded) {
+      const chipTimeMs = chipEl.dataset.chipTimeMs ?? ''
+      if (chipTimeMs !== '') {
+        const wordIndices = (chipEl.dataset.chipIndices ?? '')
+          .split(',')
+          .map((value) => Number.parseInt(value, 10))
+          .filter((value) => Number.isInteger(value))
+        if (wordIndices.length > 0) {
+          dragRef.current = {
+            pointerId: event.pointerId,
+            pressedLineId,
+            startClientX: event.clientX,
+            mode: 'word',
+            dragging: false,
+            modifiers,
+            pressedStartMs: 0,
+            pressedIsUntimed: false,
+            moveLineIds: [pressedLineId],
+            excludeTimesMs: [],
+            nodes: new Map(),
+            blockedEl: null,
+            followSuspended: false,
+            wordLineId: pressedLineId,
+            wordIndices,
+            wordChipEl: chipEl,
+          }
+          event.currentTarget.setPointerCapture(event.pointerId)
+          return
+        }
+      }
     }
 
     // 有修饰键：只记「点击待发」，不建拖动会话
@@ -591,6 +641,21 @@ export function LyricTrack() {
     // 修饰键点击不参与拖动
     if (session.mode === 'click') return
     const rawPx = event.clientX - session.startClientX
+    // 字级拖动：只挪被按的那张字卡，不吸附、不参与行级位移
+    if (session.mode === 'word') {
+      if (!session.dragging) {
+        if (Math.abs(rawPx) <= DRAG_THRESHOLD_PX) return
+        session.dragging = true
+        if (session.wordChipEl !== undefined) {
+          session.wordChipEl.style.zIndex = '10'
+          session.wordChipEl.style.cursor = 'grabbing'
+        }
+      }
+      if (session.wordChipEl !== undefined) {
+        session.wordChipEl.style.transform = `translate3d(${rawPx}px, 0, 0)`
+      }
+      return
+    }
     if (!session.dragging) {
       // 只看水平位移：纵向抖动不算拖动；阈值内不进入拖动、不写任何样式
       if (Math.abs(rawPx) < DRAG_THRESHOLD_PX) return
@@ -661,6 +726,26 @@ export function LyricTrack() {
     // 显式收口：multi + confirm 分支不走 clearSessionStyles，须在此先隐藏辅助线
     hideGuide()
     restoreFollowAfterDrag(session)
+
+    // 字级拖动：未越阈值当点击（选中该行）；越阈值则换算毫秒后提交字级平移
+    if (session.mode === 'word') {
+      if (!session.dragging) {
+        clearSessionStyles(session)
+        handleSelectBlock(session.pressedLineId, session.modifiers)
+        return
+      }
+      const rawPx = event.clientX - session.startClientX
+      const deltaMs = Math.round(rawPx / snapshot.pixelsPerMs)
+      clearSessionStyles(session)
+      if (
+        Math.abs(deltaMs) >= DRAG_MIN_DELTA_MS &&
+        session.wordLineId !== undefined &&
+        session.wordIndices !== undefined
+      ) {
+        nudgeWordsByOffset(session.wordLineId, session.wordIndices, deltaMs)
+      }
+      return
+    }
 
     // 未越阈值 = 一次点击：按点选语义派发（无修饰键时即普通单选，保零.3）
     if (!session.dragging) {

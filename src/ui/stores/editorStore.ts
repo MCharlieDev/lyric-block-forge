@@ -240,6 +240,22 @@ export interface EditorState {
     values: Array<{ wordIndex: number; timeMs: number; wordText?: string }>,
   ) => void
   /**
+   * 按位移平移若干字级时间戳（字级拖拽），可撤销；**行级默认不动**。
+   *
+   * 单向联动规则（只允许字拉行，不允许行拉字）：
+   * - **普通平移**：落 `offset`，只改 `wordRefs` 里的字级，`lineIds` 留空，
+   *   因此行级与其余字级保持原位；
+   * - **首字越界前移**：若首字在本次位移后早于行级时间，则落 `absolute`，
+   *   把行级与首字一起拉到同一个目标时间（首字不会跑到行卡片之前）。
+   *
+   * 未打轴（回放无时间）的字不参与；`deltaMs` 为 0 或无有效字时 no-op。
+   *
+   * @param lineId 目标行 ID
+   * @param wordIndices 目标字下标（行模型 `wordTimestamps` 的数组下标）
+   * @param deltaMs 位移（毫秒），正数延后、负数提前
+   */
+  nudgeWordsByOffset: (lineId: string, wordIndices: number[], deltaMs: number) => void
+  /**
    * 把一行的**行级时间戳**改到绝对时间 `timeMs`（行编辑弹窗的"行级时间戳"框），可撤销。
    *
    * 两种表达：
@@ -804,6 +820,75 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       description: `字级微调「${line.text}」（${changes.length} 处）`,
       baseVersion: document.version,
     })
+    set({ log: next, replay: computeReplay(document, next) })
+  },
+
+  nudgeWordsByOffset: (lineId, wordIndices, deltaMs) => {
+    if (!Number.isFinite(deltaMs)) return
+    // 内部一律整数毫秒
+    const offsetMs = Math.round(deltaMs)
+    if (offsetMs === 0) return
+    const { document, replay, log } = get()
+    const line = document.lines.find((item) => item.id === lineId)
+    if (line === undefined) return
+    // 去重 + 剔除越界下标 + 剔除当前无回放时间的字（未打轴的字不参与平移）
+    const validIndices = Array.from(new Set(wordIndices))
+      .filter((index) => Number.isInteger(index) && index >= 0 && index < line.wordTimestamps.length)
+      .filter((index) => getReplayedWordTime(replay, lineId, index) !== null)
+    if (validIndices.length === 0) return
+    const currentLineTime = getReplayedLineTime(replay, lineId)
+    const currentFirstWordTime = getReplayedWordTime(replay, lineId, 0)
+    const targetFirstTime = currentFirstWordTime === null ? null : currentFirstWordTime + offsetMs
+    // 未打轴的行没有行级时间可比，无法判定越界，按普通平移处理
+    const needsSyncLine =
+      validIndices.includes(0) &&
+      targetFirstTime !== null &&
+      currentLineTime !== null &&
+      targetFirstTime < currentLineTime
+    // 越界联动时，同批被拖拽的其余字也必须按同一偏移平移，
+    // 否则它们会留在原地、与首字撕裂
+    const otherWordValues: Array<{ lineId: string; wordIndex: number; timeMs: number }> = []
+    if (needsSyncLine) {
+      for (const index of validIndices) {
+        if (index === 0) continue
+        const originalTime = getReplayedWordTime(replay, lineId, index)
+        if (originalTime === null) continue
+        otherWordValues.push({ lineId, wordIndex: index, timeMs: originalTime + offsetMs })
+      }
+    }
+    const next =
+      needsSyncLine && targetFirstTime !== null
+        ? appendOperation(log, {
+            kind: 'word-timestamp',
+            scope: {
+              lineIds: [lineId],
+              wordRefs: validIndices.map((wordIndex) => ({ lineId, wordIndex })),
+              timeRange: null,
+            },
+            delta: {
+              mode: 'absolute',
+              values: [
+                // wordIndex === null 是 core 契约里的"行级时间戳"
+                { lineId, wordIndex: null, timeMs: targetFirstTime },
+                { lineId, wordIndex: 0, timeMs: targetFirstTime },
+                ...otherWordValues,
+              ],
+            },
+            description: `字级平移并拉齐行头「${line.text}」（${offsetMs > 0 ? '+' : ''}${offsetMs}ms）`,
+            baseVersion: document.version,
+          })
+        : appendOperation(log, {
+            kind: 'word-timestamp',
+            // lineIds 留空：行级不参与本次 offset
+            scope: {
+              lineIds: [],
+              wordRefs: validIndices.map((wordIndex) => ({ lineId, wordIndex })),
+              timeRange: null,
+            },
+            delta: { mode: 'offset', offsetMs },
+            description: `字级平移「${line.text}」（${validIndices.length}字，${offsetMs > 0 ? '+' : ''}${offsetMs}ms）`,
+            baseVersion: document.version,
+          })
     set({ log: next, replay: computeReplay(document, next) })
   },
 
