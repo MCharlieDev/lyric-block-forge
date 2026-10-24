@@ -3199,7 +3199,7 @@ async function testBD(cdp, checks) {
   assert(checks, 'BD.D 次字标签仍在 <' + fmt3(w1) + '>', typeof row === 'string' && row.indexOf('<' + fmt3(w1) + '>') >= 0, J(row))
 }
 
-/* -------- BE：行首拖动（推土机）——热区改行首、字卡屏上不动、复用 stampLine -------- */
+/* -------- BE：行首拖动（推土机）——热区改行首、拖动中字卡不动、松手推平被越过的字卡 -------- */
 
 async function testBE(cdp, checks) {
   const ids = await ev(cdp, '__lrc.ids()')
@@ -3312,19 +3312,34 @@ async function testBE(cdp, checks) {
     `Δleft=${(rectAfter.left - rectBefore.left).toFixed(1)}`,
   )
 
-  // BE.b 走 stampLine：一条 absolute + 只写行级项，字级全程不动
+  // BE.b 走 setLineStartWithPush：一条 absolute 同时写行级与被越过的字级（推土机）
+  const pushedIndexes = wordsBefore
+    .map((wordMs, index) => (wordMs !== null && wordMs < expectedStart ? index : -1))
+    .filter((index) => index >= 0)
+  const expectedWords = wordsBefore.map((wordMs, index) =>
+    pushedIndexes.indexOf(index) >= 0 ? expectedStart : wordMs,
+  )
   assert(
     checks,
     'BE.b 松手后行首 = 原行首 + 位移毫秒',
     timesAfter.length === 1 && timesAfter[0] === expectedStart,
     `${J(timesAfter)} 期望 ${expectedStart}`,
   )
-  assert(checks, 'BE.b 字级时间戳全程未变', eq(wordsAfter, wordsBefore), `${J(wordsBefore)} -> ${J(wordsAfter)}`)
   assert(
     checks,
-    'BE.b 松手后字卡屏上仍在原位',
-    Math.abs(chipLeftAfter - chipLeftBefore) <= 1,
-    `Δchip=${(chipLeftAfter - chipLeftBefore).toFixed(2)}`,
+    'BE.b 推土机：被越过的字卡时间 = 新行首',
+    pushedIndexes.length >= 1 && eq(wordsAfter, expectedWords),
+    `${J(wordsBefore)} -> ${J(wordsAfter)} 期望 ${J(expectedWords)}`,
+  )
+  const chipOffsetBefore = chipLeftBefore - rectBefore.left
+  const chipOffsetAfter = chipLeftAfter - rectAfter.left
+  const expectedChipShiftPx =
+    (wordsAfter[0] - timesAfter[0] - (wordsBefore[0] - timesBefore[0])) * ppms
+  assert(
+    checks,
+    'BE.b 首张字卡在块内偏移跟随推平后的时间',
+    Math.abs(chipOffsetAfter - chipOffsetBefore - expectedChipShiftPx) <= 1.5,
+    `Δoffset=${(chipOffsetAfter - chipOffsetBefore).toFixed(2)} 期望 ${expectedChipShiftPx.toFixed(2)}`,
   )
   assert(checks, 'BE.b 松手后内层 transform 已清理', innerAfter === '', J(innerAfter))
   assert(checks, 'BE.b 日志恰好 +1', logAfter === logBefore + 1, `${logBefore} -> ${logAfter}`)
@@ -3334,9 +3349,15 @@ async function testBE(cdp, checks) {
   assert(checks, 'BE.b delta.mode=absolute', absValues !== null, J(delta))
   assert(
     checks,
-    'BE.b values 只含一条行级项',
-    absValues !== null && absValues.length === 1 && absValues[0].lineId === id &&
-      absValues[0].wordIndex === null && absValues[0].timeMs === expectedStart,
+    'BE.b values = 行级 + 被推平的每个字级',
+    absValues !== null && absValues.length === pushedIndexes.length + 1 &&
+      absValues[0].lineId === id && absValues[0].wordIndex === null &&
+      absValues[0].timeMs === expectedStart &&
+      pushedIndexes.every((wordIndex, offset) =>
+        absValues[offset + 1].lineId === id &&
+        absValues[offset + 1].wordIndex === wordIndex &&
+        absValues[offset + 1].timeMs === expectedStart,
+      ),
     J(absValues),
   )
 
@@ -3411,7 +3432,7 @@ const TESTS = [
   ['BB', '设置面板：固定搜索与 footer / 过滤 / 吸附四项 / 既有项回归', testBB],
   ['BC', '设置：元数据前缀 mode 三态迁移（boot 读盘 + store 白名单）', testBC],
   ['BD', '字级清空导出：D4 链式向前继承（首字落行级 / 中间字落前一字 / 整行全清仍带标签 / 链头无行级跳过标签）', testBD],
-  ['BE', '行首拖动：热区改行首时间、字卡屏上不动、复用 stampLine 落 absolute', testBE],
+  ['BE', '行首拖动：热区改行首时间、拖动中字卡不动、松手推平被越过的字卡', testBE],
 ]
 
 async function main() {

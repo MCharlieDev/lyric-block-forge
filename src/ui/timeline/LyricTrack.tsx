@@ -132,7 +132,7 @@ type DragMode =
   | 'multi'
   /** 字级拖动：只平移被按字卡（必要时由数据层联动行头） */
   | 'word'
-  /** 行首拖动（推土机）：只改行首时间，字级时间戳不动 */
+  /** 行首拖动（推土机）：拖动中只改行首，松手推平被越过的字卡 */
   | 'line-start'
 
 /** 一次按下的过程状态。整个过程不触发渲染，故放在 ref 里。 */
@@ -219,6 +219,7 @@ export function LyricTrack() {
   const selectLineRange = useEditorStore((state) => state.selectLineRange)
   const clearLineSelection = useEditorStore((state) => state.clearLineSelection)
   const stampLine = useEditorStore((state) => state.stampLine)
+  const setLineStartWithPush = useEditorStore((state) => state.setLineStartWithPush)
   const moveLinesByOffset = useEditorStore((state) => state.moveLinesByOffset)
   const nudgeWordsByOffset = useEditorStore((state) => state.nudgeWordsByOffset)
   const adapters = useAdapters()
@@ -829,7 +830,7 @@ export function LyricTrack() {
       return
     }
 
-    // 行首拖动：换算毫秒后复用 stampLine（一条 manual-timestamp + absolute，只写行级项）。
+    // 行首拖动：落一条 absolute，同时写行级与被越过的字级（推土机）。
     // 位移夹到「时间 ≥ 0」；|deltaMs| < 10 视为点击，不写日志。
     if (session.mode === 'line-start') {
       const minDx = -session.pressedStartMs * snapshot.pixelsPerMs
@@ -845,7 +846,7 @@ export function LyricTrack() {
         showToast('行首时间不能为负')
         return
       }
-      stampLine(session.pressedLineId, targetMs)
+      setLineStartWithPush(session.pressedLineId, targetMs)
       return
     }
 

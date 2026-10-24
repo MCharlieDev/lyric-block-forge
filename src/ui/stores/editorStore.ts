@@ -183,6 +183,20 @@ export interface EditorState {
    * @param timeMs 落点时间（毫秒）
    */
   stampLine: (lineId: string, timeMs: number) => void
+  /**
+   * 行首拖动（推土机）：把行首移到 `newStartMs`，并推平被越过的字卡。
+   *
+   * 行级时间是本行的绝对锚点，行首右移后，凡是时间早于新行首的字卡都会
+   * 落到块左缘之外；这里把它们一并推到新行首（时间等于行级）。
+   * 行级项与被推平的每个字级项打包进**同一条** `absolute`，
+   * 松手后一步撤销即可全部复原。
+   *
+   * 没有被越过的字卡时等价于 {@link stampLine}。
+   *
+   * @param lineId 目标行 ID
+   * @param newStartMs 新行首时间（毫秒）
+   */
+  setLineStartWithPush: (lineId: string, newStartMs: number) => void
 
   /**
    * 把**一组已打轴的行**整体平移 `deltaMs`（多选拖动 / 多选方向键微调共用）。
@@ -716,6 +730,42 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       scope: { lineIds: [lineId], wordRefs: [], timeRange: null },
       delta: { mode: 'absolute', values: [{ lineId, wordIndex: null, timeMs: landedMs }] },
       description: `手动打轴「${line.text}」（${formatTimecode(landedMs)}）`,
+      baseVersion: document.version,
+    })
+    set({ log: next, replay: computeReplay(document, next) })
+  },
+
+  setLineStartWithPush: (lineId, newStartMs) => {
+    if (!Number.isFinite(newStartMs) || newStartMs < 0) return
+    const { document, log, replay } = get()
+    const line = document.lines.find((item) => item.id === lineId)
+    if (line === undefined) return
+    const landedMs = Math.round(newStartMs)
+    // 被越过的字卡：时间早于新行首，绝对定位下会落到块左缘之外
+    const pushedWordIndexes = line.wordTimestamps
+      .map((_, wordIndex) => wordIndex)
+      .filter((wordIndex) => {
+        const wordTimeMs = getReplayedWordTime(replay, lineId, wordIndex)
+        return wordTimeMs !== null && wordTimeMs < landedMs
+      })
+    if (pushedWordIndexes.length === 0) {
+      get().stampLine(lineId, landedMs)
+      return
+    }
+    // 行级项与被推平的字级项必须同属一条 absolute：撤销一步即全部复原
+    const values = [
+      { lineId, wordIndex: null, timeMs: landedMs },
+      ...pushedWordIndexes.map((wordIndex) => ({ lineId, wordIndex, timeMs: landedMs })),
+    ]
+    const next = appendOperation(log, {
+      kind: 'manual-timestamp',
+      scope: {
+        lineIds: [lineId],
+        wordRefs: pushedWordIndexes.map((wordIndex) => ({ lineId, wordIndex })),
+        timeRange: null,
+      },
+      delta: { mode: 'absolute', values },
+      description: `行首拖动「${line.text}」（${formatTimecode(landedMs)}，推平 ${pushedWordIndexes.length} 个字卡）`,
       baseVersion: document.version,
     })
     set({ log: next, replay: computeReplay(document, next) })

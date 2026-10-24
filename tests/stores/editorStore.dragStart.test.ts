@@ -1,10 +1,11 @@
 /**
  * 行首拖动（推土机）落盘语义测试。
  *
- * 轨道在 `line-start` 会话松手时复用 `stampLine`：一条 `manual-timestamp` +
- * `absolute`，`values` 只含行级项（`wordIndex: null`），字级时间戳不动；
- * 撤销一步即可复原行首。本文件只从 store 层确认这两条契约，
- * 几何（框动字不动）由 harness BE 组在真实浏览器里验证。
+ * 轨道在 `line-start` 会话松手时调用 `setLineStartWithPush`：一条
+ * `manual-timestamp` + `absolute`，`values` 首项是行级项（`wordIndex: null`），
+ * 其后是被新行首越过的字级项（时间同为新行首）；没有被越过的字卡时退化为
+ * `stampLine` 的普通打轴。撤销一步即可复原行级与被推平的字级。
+ * 几何（框动字不动、松手后字卡跟随）由 harness BE 组在真实浏览器里验证。
  */
 
 import { describe, expect, test } from 'vitest'
@@ -102,5 +103,58 @@ describe('stampLine · 行首拖动落盘', () => {
     useEditorStore.getState().undoLastAction()
     expect(getReplayedLineTime(useEditorStore.getState().replay, LINE_ID)).toBe(1000)
     expect(readWords()).toEqual(wordsBefore)
+  })
+})
+
+describe('setLineStartWithPush · 推土机推平', () => {
+  /** 行级 1000、字级 900 / 1100：首字早于行首，行首右移到 1050 时被越过。 */
+  function pushableLine(): LyricLine {
+    return makeLine(
+      LINE_ID,
+      '好天',
+      [word('好', 0, 1, 900), word('天', 1, 2, 1100)],
+      [lineTime(1000)],
+    )
+  }
+
+  /** 读两个字级时间。 */
+  function readTwoWords(): Array<number | null> {
+    const { replay } = useEditorStore.getState()
+    return [0, 1].map((index) => getReplayedWordTime(replay, LINE_ID, index))
+  }
+
+  test('a. 行级与被越过的字级打包成一条 absolute', () => {
+    loadDoc(makeDoc([pushableLine()]))
+    const before = useEditorStore.getState().log.entries.length
+
+    useEditorStore.getState().setLineStartWithPush(LINE_ID, 1050)
+    const { log, replay } = useEditorStore.getState()
+    const entry = log.entries.at(-1)
+
+    expect(log.entries.length).toBe(before + 1)
+    expect(entry?.kind).toBe('manual-timestamp')
+    const delta = entry?.delta
+    if (delta === undefined || delta.mode !== 'absolute') {
+      throw new Error('推土机必须落 absolute（offset 会移动未被越过的字卡）')
+    }
+    // 首项行级 1050，被越过的字级 index 0 同为 1050；index 1 未被越过
+    expect(delta.values).toEqual([
+      { lineId: LINE_ID, wordIndex: null, timeMs: 1050 },
+      { lineId: LINE_ID, wordIndex: 0, timeMs: 1050 },
+    ])
+    expect(getReplayedLineTime(replay, LINE_ID)).toBe(1050)
+    expect(readTwoWords()).toEqual([1050, 1100])
+  })
+
+  test('b. 撤销一步同时复原行首与被推平的字卡', () => {
+    loadDoc(makeDoc([pushableLine()]))
+
+    useEditorStore.getState().setLineStartWithPush(LINE_ID, 1050)
+    expect(getReplayedLineTime(useEditorStore.getState().replay, LINE_ID)).toBe(1050)
+    expect(readTwoWords()).toEqual([1050, 1100])
+
+    useEditorStore.getState().undoLastAction()
+    expect(getReplayedLineTime(useEditorStore.getState().replay, LINE_ID)).toBe(1000)
+    expect(readTwoWords()).toEqual([900, 1100])
   })
 })
