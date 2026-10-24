@@ -2,6 +2,7 @@ import type { LyricLine } from '@core'
 import { LYRIC_ROW_HEIGHT_PX, WORD_CHIP_MIN_WIDTH_PX } from './constants'
 import type { BlockCardMode, WordChipBox } from './blockLayout'
 import type { DisplayChip } from './displayChips'
+import { CHIP_GAP_PX } from './textMeasure'
 import { formatMiniTime, formatTimecode } from '../utils/format'
 
 /** 点选歌词块时按下的修饰键。由轨道从 PointerEvent 上取，交回选择语义分派。 */
@@ -42,7 +43,7 @@ interface LyricBlockProps {
   overlapsPrev: boolean
   /** 卡片形态：放大态且有字级时为 `word`，其余为 `line` */
   mode: BlockCardMode
-  /** 字级显示 chip（已按时间升序、同时间合并），仅 `word` 模式渲染 */
+  /** 字级显示 chip（已按时间升序、逐字成卡；同时间相邻者由本组件叠成阶梯），仅 `word` 模式渲染 */
   chips: DisplayChip[]
   /** 字级 chip 的块内绝对坐标（与 `chips` 一一对应），仅 `word` 模式有值 */
   wordChips: WordChipBox[] | null
@@ -107,6 +108,45 @@ export function LyricBlock({
   /** 叠压接缝：用内阴影标记左边缘，不占布局、不改块宽，选中/多选态同样保留。 */
   const seamClass = overlapsPrev ? 'shadow-[inset_2px_0_0_0_rgba(76,141,255,0.5)]' : ''
 
+  // ---- 同时间多字组：左缘同位（时间相同）、宽度阶梯（已由轨道算好） ----
+  // 这里只做两件事：组内左内偏移 + 绘制顺序；宽度直接取 `wordChips[i].widthPx`，不重算。
+
+  /** 与前一张严格同时间（非 null）→ 多元素组内的后续成员 */
+  const isSameTimeGroup = (index: number) =>
+    chips[index].timeMs !== null && index > 0 && chips[index].timeMs === chips[index - 1].timeMs
+
+  /** 组首：不是同时间组的后续成员 */
+  const isGroupHead = (index: number) => index === 0 || !isSameTimeGroup(index)
+
+  /** 组尾：下一张时间不同，或已是最后一张 */
+  const isGroupTail = (index: number) =>
+    index === chips.length - 1 || chips[index + 1].timeMs !== chips[index].timeMs
+
+  /** 是否处于多元素组（组内 ≥ 2 张）；未打轴（null）的卡永不参与 */
+  const inMultiGroup = (index: number) =>
+    chips[index].timeMs !== null &&
+    (isSameTimeGroup(index) ||
+      (index + 1 < chips.length && chips[index + 1].timeMs === chips[index].timeMs))
+
+  /**
+   * 绘制顺序：多元素组整组倒序推入，其余按原序。
+   *
+   * 组内左缘完全重合，后绘制的卡压在上层；倒序后「组内第一张最后绘制」，
+   * 命中（`closest('[data-word-chip]')` 遵循绘制顺序）才会落在第一个字上。
+   * 不用 z-index：chip 一旦有正 z-index 会逃逸到平面层、压住相邻块。
+   */
+  const renderOrder: number[] = []
+  for (let index = 0; index < chips.length; index += 1) {
+    if (isGroupHead(index) && inMultiGroup(index)) {
+      let end = index
+      while (end + 1 < chips.length && chips[end + 1].timeMs === chips[index].timeMs) end += 1
+      for (let cursor = end; cursor >= index; cursor -= 1) renderOrder.push(cursor)
+      index = end
+    } else {
+      renderOrder.push(index)
+    }
+  }
+
   return (
     <div
       // 不在 Tab 序列内：键盘选中由下方歌词块列表承担，避免空格被浏览器默认行为吃掉
@@ -165,24 +205,45 @@ export function LyricBlock({
             aria-hidden
             className="absolute inset-x-0 top-0 z-[1] h-1 cursor-grab rounded-t bg-white/10"
           />
-          <div className="relative h-full w-full overflow-visible pt-1">
-            {chips.map((chip, index) => {
+          <div data-word-inner="" className="relative h-full w-full overflow-visible pt-1">
+            {renderOrder.map((index) => {
+              const chip = chips[index]
               const box = wordChips?.[index]
+              const grouped = inMultiGroup(index)
+              const head = isGroupHead(index)
+              // 组内非首卡：内容从前一张右缘之后开始；组尾补回右侧内边距（与单卡对称）
+              const groupPadding =
+                grouped && !head
+                  ? {
+                      paddingLeft: `${(wordChips?.[index - 1]?.widthPx ?? 0) + CHIP_GAP_PX}px`,
+                      paddingRight: isGroupTail(index) ? 4 : 0,
+                    }
+                  : undefined
+              const timeTextClass = grouped
+                ? 'w-full text-left font-mono text-[9px] leading-none text-neutral-200 whitespace-nowrap'
+                : 'w-full truncate text-left font-mono text-[9px] leading-none text-neutral-200'
               return (
                 <div
                   key={`${line.id}-c${index}`}
                   data-word-chip=""
                   data-chip-indices={chip.indices.join(',')}
                   data-chip-time-ms={chip.timeMs ?? ''}
-                  className="absolute top-1 bottom-0 flex flex-col items-start justify-center gap-0.5 overflow-hidden rounded-sm bg-white/5 px-1 ring-1 ring-inset ring-white/10 transition-colors hover:bg-white/10"
+                  className={`absolute top-1 bottom-0 flex flex-col items-start justify-center gap-0.5 ${
+                    // 组首的时间戳要向右溢出阶梯之上，卡片不能裁剪；其余卡保持裁剪
+                    grouped && head ? 'overflow-visible' : 'overflow-hidden'
+                  } rounded-sm bg-white/5 px-1 ring-1 ring-inset ring-white/10 transition-colors hover:bg-white/10`}
                   style={{
                     left: `${box?.leftPx ?? 0}px`,
                     width: `${box?.widthPx ?? WORD_CHIP_MIN_WIDTH_PX}px`,
+                    ...groupPadding,
                   }}
                 >
-                  <span className="w-full truncate text-left font-mono text-[9px] leading-none text-neutral-200">
-                    {formatMiniTime(chip.timeMs)}
-                  </span>
+                  {head ? (
+                    <span className={timeTextClass}>{formatMiniTime(chip.timeMs)}</span>
+                  ) : (
+                    // 组内非首卡不显示时间：用等高占位保住字行垂直位置与首卡一致
+                    <span className="text-[9px] leading-none">&nbsp;</span>
+                  )}
                   <span className="w-full truncate text-left text-xs leading-none text-neutral-200">
                     {chip.text}
                   </span>
@@ -231,6 +292,15 @@ export function LyricBlock({
           ) : null}
         </>
       )}
+      {mode === 'word' && !isDegraded && times.length === 1 ? (
+        // 行首拖动热区：仅单时间戳的放大态块提供。挂块根最左 4px，
+        // 命中后由轨道只改行首时间（字级时间戳不动）。
+        <span
+          aria-hidden
+          data-line-start-handle=""
+          className="absolute inset-y-0 left-0 w-1 cursor-ew-resize"
+        />
+      ) : null}
     </div>
   )
 }

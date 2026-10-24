@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from 'vitest'
 import {
+  CHIP_PADDING_X_PX,
   computeLineWidths,
   type LineMeasureInput,
   type MeasureTextFn,
@@ -201,6 +202,36 @@ describe('computeLineWidths · word 模式 chip 行', () => {
     computeLineWidths(input({ wordTexts: ['a'], wordTimeTexts: ['12.08'] }), measure)
 
     expect(calls).toContainEqual(['12.08', 'badge'])
+  })
+
+  test('q. 传 wordTexts 时 wordChipContentWidthsPx 为纯文本宽：不含 8、不被 22 夹', () => {
+    const measure = createFixedMeasure({ a: 5, bb: 20, c: 5 })
+    const result = computeLineWidths(input({ wordTexts: ['a', 'bb', 'c'] }), measure)
+
+    expect(result.wordChipContentWidthsPx).not.toBeNull()
+    expect(result.wordChipContentWidthsPx).toHaveLength(3)
+    // 逐项等于文本自然宽；a=5 < 22 说明未被最小宽夹取，也说明没有 +8。
+    expect(result.wordChipContentWidthsPx).toEqual([5, 20, 5])
+  })
+
+  test('r. 不传 wordTexts 或空数组：wordChipContentWidthsPx 为 null', () => {
+    const { measure } = createMeasure()
+
+    expect(computeLineWidths(input({ hasWords: true }), measure).wordChipContentWidthsPx).toBeNull()
+    expect(computeLineWidths(input({ wordTexts: [] }), measure).wordChipContentWidthsPx).toBeNull()
+  })
+
+  test('s. 同一文本：wordChipWidthsPx ≥ content + CHIP_PADDING_X_PX', () => {
+    const measure = createFixedMeasure({ a: 5, bb: 20 })
+    const result = computeLineWidths(input({ wordTexts: ['a', 'bb'] }), measure)
+
+    const full = result.wordChipWidthsPx ?? []
+    const content = result.wordChipContentWidthsPx ?? []
+    expect(full).toHaveLength(2)
+    expect(content).toHaveLength(2)
+    full.forEach((widthPx, index) => {
+      expect(widthPx).toBeGreaterThanOrEqual(content[index] + CHIP_PADDING_X_PX)
+    })
   })
 })
 

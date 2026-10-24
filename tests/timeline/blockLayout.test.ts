@@ -6,15 +6,15 @@
  */
 
 import { describe, expect, test } from 'vitest'
-import { layoutBlock, layoutWordChips, BLOCK_CHROME_X_PX } from '@ui/timeline/blockLayout'
 import {
-  BLOCK_GAP_PX,
-  MIN_BLOCK_WIDTH_PX,
-  WORD_CARD_DEGRADED_WIDTH_PX,
-  WORD_CARD_HANDLE_GAP_PX,
-  WORD_CARD_HANDLE_WIDTH_PX,
-  WORD_CHIP_MIN_WIDTH_PX,
-} from '@ui/timeline/constants'
+  layoutBlock,
+  layoutWordChips,
+  stackWordChipWidths,
+  BLOCK_BORDER_SIDE_PX,
+  BLOCK_CHROME_X_PX,
+  BLOCK_PADDING_SIDE_PX,
+} from '@ui/timeline/blockLayout'
+import { BLOCK_GAP_PX, MIN_BLOCK_WIDTH_PX, WORD_CHIP_MIN_WIDTH_PX } from '@ui/timeline/constants'
 
 /** 块左右两侧的装饰宽合计（padding + border，共 14px）。 */
 const PAD = BLOCK_CHROME_X_PX
@@ -130,19 +130,20 @@ describe('layoutBlock · 内容宽与保底宽', () => {
 })
 
 describe('layoutBlock · word 模式与降级', () => {
-  /** word 模式的最小总宽：把手 + 间隔 + 最小 chip + chrome = 52。 */
-  const WORD_MIN_WIDTH =
-    WORD_CARD_HANDLE_WIDTH_PX + WORD_CARD_HANDLE_GAP_PX + WORD_CHIP_MIN_WIDTH_PX + PAD
+  /** word 流式回退的左右装饰宽（无左把手）：padding 6 + border 1×2 = 8。 */
+  const WORD_FLOW_PAD = BLOCK_PADDING_SIDE_PX + BLOCK_BORDER_SIDE_PX * 2
+  /** word 流式回退的最小总宽：max(40, 最小 chip 22 + 8) = 40。 */
+  const WORD_FLOW_MIN_WIDTH = Math.max(MIN_BLOCK_WIDTH_PX, WORD_CHIP_MIN_WIDTH_PX + WORD_FLOW_PAD)
 
-  test('l. word 模式、无下一行：宽度 = chip 行 + 把手 + 间隔 + chrome', () => {
+  test('l. word 回退分支 · 无下一行：content = chip行 + 8，min = 40', () => {
     const result = layoutBlock(
       input({ mode: 'word', wordRowWidthPx: 76, nextStartMs: null }),
     )
 
-    expect(result.contentWidthPx).toBe(76 + WORD_CARD_HANDLE_WIDTH_PX + WORD_CARD_HANDLE_GAP_PX + PAD)
-    expect(result.contentWidthPx).toBe(106)
-    expect(result.minWidthPx).toBe(WORD_MIN_WIDTH)
-    expect(result.widthPx).toBe(106)
+    // word 流式回退（无 wordChips）：wordPad = 6 + 1×2 = 8，无下一行不压缩。
+    expect(result.contentWidthPx).toBe(76 + WORD_FLOW_PAD)
+    expect(result.minWidthPx).toBe(WORD_FLOW_MIN_WIDTH)
+    expect(result.widthPx).toBe(76 + WORD_FLOW_PAD)
     expect(result.isDegraded).toBe(false)
   })
 
@@ -160,33 +161,14 @@ describe('layoutBlock · word 模式与降级', () => {
       }),
     )
 
-    // content = 100 + 12 + 4 + 14 = 130；cap = 204 - 4 = 200，装得下。
-    expect(result.contentWidthPx).toBe(130)
-    expect(result.widthPx).toBe(130)
+    // content = 100 + 8 = 108；cap = 204 - 4 = 200，装得下。
+    expect(result.contentWidthPx).toBe(100 + WORD_FLOW_PAD)
+    expect(result.widthPx).toBe(100 + WORD_FLOW_PAD)
     expect(result.isCompressed).toBe(false)
     expect(result.isDegraded).toBe(false)
   })
 
-  test('n. word 模式、cap < 52 且允许降级：降级为 14px 极窄块', () => {
-    // content = 106；timeGap = 50，cap = 46 < 52。
-    const result = layoutBlock(
-      input({
-        mode: 'word',
-        wordRowWidthPx: 76,
-        nextStartMs: 50,
-        pixelsPerMs: 1,
-        degradeEnabled: true,
-      }),
-    )
-
-    expect(result.isDegraded).toBe(true)
-    expect(result.widthPx).toBe(WORD_CARD_DEGRADED_WIDTH_PX)
-    expect(result.isCompressed).toBe(true)
-    // 14 < 46：降级后不越过下一块。
-    expect(result.overlapsNext).toBe(false)
-  })
-
-  test('o. word 模式、cap < 52 但关闭降级：保底 52，接受重叠', () => {
+  test('o. word 回退分支 · cap 46 高于 min 40：压缩到 cap，不重叠', () => {
     const result = layoutBlock(
       input({
         mode: 'word',
@@ -197,10 +179,13 @@ describe('layoutBlock · word 模式与降级', () => {
       }),
     )
 
+    // content = 76 + 8 = 84；cap = 50 - 4 = 46 > min 40，压缩到 46，恰好不越界。
+    expect(result.contentWidthPx).toBe(76 + WORD_FLOW_PAD)
+    expect(result.minWidthPx).toBe(WORD_FLOW_MIN_WIDTH)
+    expect(result.widthPx).toBe(50 - BLOCK_GAP_PX)
+    expect(result.isCompressed).toBe(true)
+    expect(result.overlapsNext).toBe(false)
     expect(result.isDegraded).toBe(false)
-    expect(result.widthPx).toBe(WORD_MIN_WIDTH)
-    expect(result.widthPx).toBe(52)
-    expect(result.overlapsNext).toBe(true)
   })
 })
 
@@ -240,6 +225,56 @@ describe('layoutWordChips · 微型时间轴坐标', () => {
       { leftPx: 0, widthPx: 20 },
       { leftPx: 22, widthPx: 10 },
     ])
+  })
+})
+
+describe('stackWordChipWidths · 同时间阶梯宽度', () => {
+  /** chip 单侧 padding：CHIP_PADDING_X_PX / 2 = 4。 */
+  const HALF_PAD = 4
+  /** chip 之间的间隙：CHIP_GAP_PX = 2。 */
+  const GAP = 2
+
+  test('q5. 两字同时间：首卡 4+c0，末卡再累加 gap+c1+4', () => {
+    const result = stackWordChipWidths([22, 22], [10, 20], [1000, 1000])
+
+    expect(result).toEqual([HALF_PAD + 10, HALF_PAD + 10 + GAP + 20 + HALF_PAD])
+    expect(result).toEqual([14, 40])
+  })
+
+  test('q6. 三字同时间：逐级累加，末卡多 4；总和 = 8 + Σc + 2(N-1)', () => {
+    const content = [10, 20, 30]
+    const result = stackWordChipWidths([22, 22, 22], content, [1000, 1000, 1000])
+
+    const w0 = HALF_PAD + content[0]
+    const w1 = w0 + GAP + content[1]
+    const w2 = w1 + GAP + content[2] + HALF_PAD
+    expect(result).toEqual([w0, w1, w2])
+    expect(result[2]).toBe(8 + content.reduce((sum, widthPx) => sum + widthPx, 0) + GAP * 2)
+  })
+
+  test('q7. 混排：只有同时间组被累加，不同时间的单卡原样输出', () => {
+    const result = stackWordChipWidths(
+      [22, 30, 22, 22],
+      [10, 25, 15, 18],
+      [1000, 2000, 3000, 3000],
+    )
+
+    expect(result).toEqual([22, 30, HALF_PAD + 15, HALF_PAD + 15 + GAP + 18 + HALF_PAD])
+    expect(result).toEqual([22, 30, 19, 43])
+  })
+
+  test('q8. null 时间不参与阶梯：原样输出，且不打断相邻的等时组', () => {
+    const result = stackWordChipWidths([22, 22, 22], [10, 10, 10], [null, 5000, 5000])
+
+    expect(result).toEqual([22, HALF_PAD + 10, HALF_PAD + 10 + GAP + 10 + HALF_PAD])
+    expect(result).toEqual([22, 14, 30])
+  })
+
+  test('q9. 单元素组原样输出：等于 fullWidthsPx', () => {
+    const full = [22, 35]
+    const result = stackWordChipWidths(full, [5, 30], [1000, 2000])
+
+    expect(result).toEqual(full)
   })
 })
 

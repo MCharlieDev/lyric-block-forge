@@ -2,7 +2,7 @@
  * 字级显示 chip 派生（`deriveDisplayChips`）纯函数测试。
  *
  * 数据全部自造：现有 fixture 没有严格相等 / 乱序的字级时间，
- * 因此这里显式覆盖排序、合并、range 保真与入参不可变。
+ * 因此这里显式覆盖排序、逐字成卡（同时间不合并）、range 保真与入参不可变。
  */
 
 import { describe, expect, test } from 'vitest'
@@ -60,43 +60,27 @@ describe('deriveDisplayChips · 基本形态', () => {
   })
 })
 
-describe('deriveDisplayChips · 严格相等合并', () => {
-  test('e. 排序后相邻且严格相等 → 合并为 1 个，text 按 index 升序拼', () => {
+describe('deriveDisplayChips · 同时间不合并（逐字成卡）', () => {
+  // 合并契约已删除；排序保证同时间相邻，供渲染层做阶梯
+  test('e. 三字同时间不合并，按原 index 稳定排序', () => {
     const words = [word('甲', 0, 1), word('乙', 1, 2), word('丙', 2, 3)]
     const chips = deriveDisplayChips(words, [100, 100, 200])
 
-    expect(chips).toHaveLength(2)
-    expect(chips[0]).toEqual({
-      text: '甲乙',
-      timeMs: 100,
-      indices: [0, 1],
-      range: { start: 0, end: 2 },
-      precisionMs: 100,
-    })
-    expect(chips[1].text).toBe('丙')
-    expect(chips[1].indices).toEqual([2])
+    expect(chips).toHaveLength(3)
+    expect(chips.map((chip) => chip.timeMs)).toEqual([100, 100, 200])
+    expect(chips.map((chip) => chip.indices)).toEqual([[0], [1], [2]])
+    expect(chips.map((chip) => chip.text)).toEqual(['甲', '乙', '丙'])
   })
 
-  test('f. 相等但原 index 不相邻 → 排序后仍相邻并合并，组内按 index 拼 text', () => {
+  test('f. 同时间但原 index 不相邻也不合并：排序后仍按原 index 稳定', () => {
     const words = [word('甲', 0, 1), word('乙', 1, 2), word('丙', 2, 3)]
     const chips = deriveDisplayChips(words, [100, 200, 100])
 
-    expect(chips).toHaveLength(2)
-    expect(chips[0]).toEqual({
-      text: '甲丙',
-      timeMs: 100,
-      indices: [0, 2],
-      range: { start: 0, end: 3 },
-      precisionMs: 100,
-    })
-    // 中间的字仍独立保留，不会被吞进相等组
-    expect(chips[1]).toEqual({
-      text: '乙',
-      timeMs: 200,
-      indices: [1],
-      range: { start: 1, end: 2 },
-      precisionMs: 100,
-    })
+    expect(chips).toHaveLength(3)
+    // 时间 100 的两条在前，且原 index 0 先于 index 2；时间 200 的在最后
+    expect(chips.map((chip) => chip.timeMs)).toEqual([100, 100, 200])
+    expect(chips.map((chip) => chip.indices)).toEqual([[0], [2], [1]])
+    expect(chips.map((chip) => chip.text)).toEqual(['甲', '丙', '乙'])
   })
 })
 
@@ -112,21 +96,23 @@ describe('deriveDisplayChips · range / 空格 / 精度', () => {
     ])
   })
 
-  test('h. 带空格片段 → 合并文本保留空格', () => {
+  test('h. 两字同时间各自成卡，文本原样保留前导空格', () => {
     const words = [word('夜色渐深', 0, 4), word(' 风穿过长街', 4, 9)]
     const chips = deriveDisplayChips(words, [100, 100])
 
-    expect(chips).toHaveLength(1)
-    expect(chips[0].text).toBe('夜色渐深 风穿过长街')
-    expect(chips[0].range).toEqual({ start: 0, end: 9 })
+    expect(chips).toHaveLength(2)
+    expect(chips[0].text).toBe('夜色渐深')
+    expect(chips[0].range).toEqual({ start: 0, end: 4 })
+    expect(chips[1].text).toBe(' 风穿过长街')
+    expect(chips[1].range).toEqual({ start: 4, end: 9 })
   })
 
-  test('i. precisionMs 组内不一致 → 取最小非 null', () => {
+  test('i. 三字同时间各自保留自己的 precisionMs（不再取 min）', () => {
     const words = [word('甲', 0, 1, 50), word('乙', 1, 2, 10), word('丙', 2, 3, 20)]
     const chips = deriveDisplayChips(words, [100, 100, 100])
 
-    expect(chips).toHaveLength(1)
-    expect(chips[0].precisionMs).toBe(10)
+    expect(chips).toHaveLength(3)
+    expect(chips.map((chip) => chip.precisionMs)).toEqual([50, 10, 20])
   })
 
   test('j. 不同时间不合并，各自保留 precisionMs', () => {

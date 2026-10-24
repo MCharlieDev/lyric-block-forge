@@ -16,7 +16,7 @@ import {
   WORD_CARD_DEGRADE_ENABLED,
   WORD_CHIP_MIN_WIDTH_PX,
 } from './constants'
-import { CHIP_GAP_PX } from './textMeasure'
+import { CHIP_GAP_PX, CHIP_PADDING_X_PX } from './textMeasure'
 
 /** 卡片形态：`line` 为缩小态行级卡片，`word` 为放大态字级卡片。 */
 export type BlockCardMode = 'line' | 'word'
@@ -72,6 +72,68 @@ export function layoutWordChips(
   }
 
   return boxes
+}
+
+/** word 模式 chip 的单侧内边距（CSS px）：`CHIP_PADDING_X_PX / 2 = 4`。 */
+const CHIP_PADDING_SIDE_PX = CHIP_PADDING_X_PX / 2
+
+/**
+ * 纯函数：把「同一时间的连续多字」的宽度改写为阶梯宽度。
+ *
+ * 只改宽度、不改左缘：左缘仍由 `layoutWordChips` 按时间算出，同组各卡 `leftPx` 完全相等，
+ * 宽度递增即可形成「左边缘对齐、右缘逐级外露」的阶梯。内容靠渲染层的左内偏移推到
+ * 前一张右缘之后（偏移量 = 前一张 `widthPx` + `CHIP_GAP_PX`）。
+ *
+ * 规则：
+ * - 三入参等长，返回等长数组。
+ * - `timesMs[i] === null` 的卡不参与阶梯，原样输出 `fullWidthsPx[i]`。
+ * - 相邻且 `timeMs` 严格相等（非 null）的连续段为一组；不同时间的段各自独立。
+ * - 单元素组原样输出 `fullWidthsPx[i]`（保留徽标宽与 `WORD_CHIP_MIN_WIDTH_PX` 下限）。
+ * - 多元素组（组内序 0..N-1，内容宽为 `contentWidthsPx`）：
+ *   `W_0 = 4 + c_0`；`W_i = W_{i-1} + 2 + c_i`（1 ≤ i ≤ N-2）；
+ *   `W_{N-1} = W_{N-2} + 2 + c_{N-1} + 4`。
+ *   即组总宽 = `8 + Σc + 2(N-1)`，与「只留左右各半 padding、组内用间隙拼接」的合并卡同宽。
+ * - 组内成员不套 `WORD_CHIP_MIN_WIDTH_PX` 下限：下限只保护单卡可点，整组才是可点目标。
+ *
+ * @param fullWidthsPx 逐卡完整宽（含 padding / 时间戳徽标 / 最小宽下限）
+ * @param contentWidthsPx 逐卡纯内容宽（`wordChipContentWidthsPx`）
+ * @param timesMs 逐卡时间戳，与上面两个数组同下标
+ * @returns 阶梯化后的逐卡宽度
+ */
+export function stackWordChipWidths(
+  fullWidthsPx: readonly number[],
+  contentWidthsPx: readonly number[],
+  timesMs: readonly (number | null)[],
+): number[] {
+  const result = fullWidthsPx.slice()
+  let index = 0
+
+  while (index < fullWidthsPx.length) {
+    const timeMs = timesMs[index]
+    if (timeMs === null || timeMs === undefined) {
+      index += 1
+      continue
+    }
+
+    // 收集相邻且时间严格相等的连续段。
+    let end = index + 1
+    while (end < fullWidthsPx.length && timesMs[end] === timeMs) end += 1
+
+    const last = end - 1
+    if (last > index) {
+      let cumulativePx = CHIP_PADDING_SIDE_PX + contentWidthsPx[index]
+      result[index] = cumulativePx
+      for (let cursor = index + 1; cursor <= last; cursor += 1) {
+        cumulativePx += CHIP_GAP_PX + contentWidthsPx[cursor]
+        if (cursor === last) cumulativePx += CHIP_PADDING_SIDE_PX
+        result[cursor] = cumulativePx
+      }
+    }
+
+    index = end
+  }
+
+  return result
 }
 
 /** `layoutBlock` 的输入：所有宽度均已测量，单位 CSS px。 */

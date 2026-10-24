@@ -10,11 +10,6 @@
 
 import { describe, expect, test } from 'vitest'
 import { layoutRows, type RowLayoutItem } from '@ui/timeline/rowLayout'
-import { BLOCK_CHROME_X_PX } from '@ui/timeline/blockLayout'
-import {
-  WORD_CARD_HANDLE_GAP_PX,
-  WORD_CARD_HANDLE_WIDTH_PX,
-} from '@ui/timeline/constants'
 
 /**
  * 造一份默认块：正文 86 + chrome 14 = 内容宽 100；保底宽 40。
@@ -134,45 +129,53 @@ describe('layoutRows · 同行宽度与重叠', () => {
 })
 
 describe('layoutRows · word 模式与降级', () => {
-  /** word 模式第一遍占位宽：chip 行 76 + 把手 12 + 间隔 4 + chrome 14 = 106。 */
-  const WORD_PLACEHOLDER_PX = 76 + WORD_CARD_HANDLE_WIDTH_PX + WORD_CARD_HANDLE_GAP_PX + BLOCK_CHROME_X_PX
+  /** 绝对定位口径下的单个 chip 宽。 */
+  const WORD_CHIP_WIDTH_PX = 82
+  /** word 内容宽 = chip 最大右缘 + 左右 border 2 = 84。 */
+  const WORD_CONTENT_PX = WORD_CHIP_WIDTH_PX + 2
 
-  test('j. word 条目同行间距不足：第二遍降级为 14px，且最终宽不超过第一遍占位宽', () => {
+  test('j. word 绝对定位 · 同行间距不足：不降级、不压缩，按真实几何标记重叠', () => {
+    const wordChips = [{ leftPx: 0, widthPx: WORD_CHIP_WIDTH_PX }]
     const items = [
-      item(0, { mode: 'word', wordRowWidthPx: 76, degradeEnabled: true }),
-      item(20, { mode: 'word', wordRowWidthPx: 76, degradeEnabled: true }),
-      item(30, { mode: 'word', wordRowWidthPx: 76, degradeEnabled: true }),
+      item(0, { mode: 'word', wordChips, degradeEnabled: true }),
+      item(20, { mode: 'word', wordChips, degradeEnabled: true }),
+      item(30, { mode: 'word', wordChips, degradeEnabled: true }),
     ]
 
     const entries = layoutRows(items, 1, 10_000, 2)
 
-    // 第一遍：0→行0、20→行1、30 两行都占且行0右缘 106 < 行1右缘 126 → 行0。
+    // 第一遍：0→行0、20→行1、30 两行都占且行0右缘 84 < 行1右缘 104 → 行0。
     expect(entries.map((entry) => entry.rowIndex)).toEqual([0, 1, 0])
-    // 第二遍：0 的同行下一块在 30 → cap = 26 < 52 → 降级。
-    expect(entries[0].isDegraded).toBe(true)
-    expect(entries[0].widthPx).toBe(14)
-    expect(entries[1].isDegraded).toBe(false)
-    expect(entries[2].isDegraded).toBe(false)
-
-    // 上界不变式：第二遍最终宽只可能收缩，行号不会被推翻。
-    for (const entry of entries) {
-      expect(entry.widthPx).toBeLessThanOrEqual(WORD_PLACEHOLDER_PX)
-    }
+    // 第二遍：绝对定位分支无 cap、不降级，宽度恒为真实内容宽 84。
+    expect(entries.map((entry) => entry.widthPx)).toEqual([
+      WORD_CONTENT_PX,
+      WORD_CONTENT_PX,
+      WORD_CONTENT_PX,
+    ])
+    expect(entries.map((entry) => entry.isDegraded)).toEqual([false, false, false])
+    // 行 0 = 0/30：30 < 0 + 84 → 重叠；行 1 只有 20，无前块。
+    expect(entries[2].overlapsPrev).toBe(true)
+    expect(entries[1].overlapsPrev).toBe(false)
   })
 
-  test('k. line 与 word 条目混排：行分配与宽度确定，不报错', () => {
+  test('k. line / word 混排 · 绝对定位：行分配确定，word 块按真实内容宽', () => {
+    const wordChips = [{ leftPx: 0, widthPx: WORD_CHIP_WIDTH_PX }]
     const items = [
-      item(0, { mode: 'word', wordRowWidthPx: 76, degradeEnabled: true }),
+      item(0, { mode: 'word', wordChips, degradeEnabled: true }),
       item(50),
-      item(100, { mode: 'word', wordRowWidthPx: 76, degradeEnabled: true }),
+      item(100, { mode: 'word', wordChips, degradeEnabled: true }),
     ]
 
     const entries = layoutRows(items, 1, 10_000, 2)
 
     expect(entries.map((entry) => entry.rowIndex)).toEqual([0, 1, 0])
-    // row0：word@0 的下一块在 100 → cap=96，未低于 52，正常压缩到 96；word@100 为末块 106。
+    // row0：word@0 内容宽 84 < cap（100 - 4 = 96），不压缩；word@100 为末块 84。
     // row1：line@50 为末块，内容宽 = max(86,20)+14 = 100。
-    expect(entries.map((entry) => entry.widthPx)).toEqual([96, 100, 106])
+    expect(entries.map((entry) => entry.widthPx)).toEqual([
+      WORD_CONTENT_PX,
+      100,
+      WORD_CONTENT_PX,
+    ])
     expect(entries.map((entry) => entry.isDegraded)).toEqual([false, false, false])
   })
 })

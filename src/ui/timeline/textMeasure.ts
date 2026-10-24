@@ -53,6 +53,14 @@ export interface LineWidths {
   wordRowWidthPx: number | null
   /** word 模式下每个 chip 的独立宽度（含自身 padding，不含间隔）；未传或为空时为 null。 */
   wordChipWidthsPx: number[] | null
+  /**
+   * word 模式下每个 chip 的纯内容宽：只测文本本身，不含 chip padding、不含时间戳徽标宽、
+   * 不受 `WORD_CHIP_MIN_WIDTH_PX` 约束。与 `wordChipWidthsPx` 同长度、同下标。
+   *
+   * 三者关系：`wordChipContentWidthsPx[i] ≤ wordChipWidthsPx[i] - CHIP_PADDING_X_PX`。
+   * 阶梯化渲染必须用本字段算内部偏移，不能用 `wordChipWidthsPx[i] - 8` 反推（拉丁字符会偏 7px/字）。
+   */
+  wordChipContentWidthsPx: number[] | null
 }
 
 /** 徽标之间的间距（对应 DOM 的 `gap-1`），每个徽标前计一次。 */
@@ -62,7 +70,7 @@ const BADGE_GAP_PX = 4
 const BADGE_PADDING_X_PX = 8
 
 /** word 模式 chip 自身左右内边距合计（对应 DOM 的 `px-1`）。 */
-const CHIP_PADDING_X_PX = 8
+export const CHIP_PADDING_X_PX = 8
 
 /** word 模式 chip 之间的间距（对应 DOM 的 `gap-0.5`）。 */
 export const CHIP_GAP_PX = 2
@@ -97,7 +105,10 @@ export function computeLineWidths(input: LineMeasureInput, measure: MeasureTextF
   const wordTimeTexts = input.wordTimeTexts
   let wordRowWidthPx: number | null = null
   let wordChipWidthsPx: number[] | null = null
+  let wordChipContentWidthsPx: number[] | null = null
   if (wordTexts !== undefined && wordTexts.length > 0) {
+    // 纯内容宽：只测文本本身，不加 padding、不算时间戳、不受最小宽夹取。
+    wordChipContentWidthsPx = wordTexts.map((chipText) => measure(chipText, 'chip'))
     wordChipWidthsPx = wordTexts.map((chipText, index) => {
       const timeText = wordTimeTexts?.[index]
       return Math.max(
@@ -111,7 +122,14 @@ export function computeLineWidths(input: LineMeasureInput, measure: MeasureTextF
       CHIP_GAP_PX * (wordTexts.length - 1)
   }
 
-  return { bodyWidthPx, infoRowWidthPx, translationWidthPx, wordRowWidthPx, wordChipWidthsPx }
+  return {
+    bodyWidthPx,
+    infoRowWidthPx,
+    translationWidthPx,
+    wordRowWidthPx,
+    wordChipWidthsPx,
+    wordChipContentWidthsPx,
+  }
 }
 
 /** 各样式对应的探针 class，必须与 `LyricBlock` 内真实元素的排版类保持一致。 */

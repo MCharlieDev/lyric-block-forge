@@ -828,6 +828,43 @@ async function dragBlock(cdp, id, dx, mid) {
 }
 
 /**
+ * 行首拖动：起拖点落在块左缘 4px 热区内（left + 2px，即 `point(id, -8)`）。
+ * 与 {@link dragBlock} 同节奏（press → 半程 → 全程 → 可选观测 → release），
+ * 但起拖点必须命中 `[data-line-start-handle]`，否则抛错（避免误走整块拖动）。
+ */
+async function dragBlockEdge(cdp, id, dx, mid) {
+  const p = await ev(cdp, `__lrc.point(${J(id)}, -8)`)
+  if (!p) throw new Error('no rect for ' + id)
+  const x0 = Math.round(p.x)
+  const y0 = Math.round(p.y)
+  const hit = await ev(cdp, `__lrc.elementAt(${x0}, ${y0})`)
+  if (hit !== id) throw new Error(`edge drag miss: at (${x0},${y0}) hit=${hit}, want ${id}`)
+  const onHandle = await ev(
+    cdp,
+    `(function(){var el=document.elementFromPoint(${x0},${y0});return !!(el&&el.closest('[data-line-start-handle]'))})()`,
+  )
+  if (onHandle !== true) throw new Error(`edge drag miss handle: at (${x0},${y0})`)
+  await mouse(cdp, 'mousePressed', x0, y0, { buttons: 1 })
+  await sleep(20)
+  await mouse(cdp, 'mouseMoved', x0 + Math.round(dx / 2), y0, { buttons: 1, button: 'left' })
+  await sleep(15)
+  await mouse(cdp, 'mouseMoved', x0 + dx, y0, { buttons: 1, button: 'left' })
+  await sleep(20)
+  if (mid) await mid()
+  await mouse(cdp, 'mouseReleased', x0 + dx, y0, { buttons: 0 })
+  await sleep(60)
+  return { x0, y0, x1: x0 + dx }
+}
+
+/** 块内首张字卡的屏幕左缘（px），用于验证「框动字不动」。 */
+const chipLeftExpr = (id) =>
+  `(function(){var b=__lrc.block(${J(id)});if(!b)return null;var c=b.querySelector('[data-word-chip]');return c?c.getBoundingClientRect().left:null})()`
+
+/** 块内 word 内层容器的 inline transform（反向位移的观测点）。 */
+const wordInnerTransformExpr = (id) =>
+  `(function(){var b=__lrc.block(${J(id)});if(!b)return null;var d=b.querySelector('[data-word-inner]');return d?d.style.transform:null})()`
+
+/**
  * 点击可见行 index 的删除按钮（走单行 removeLine）。
  * 行内「删除」按钮仅在面板不窄时渲染；收窄时回退到 ⋮ 弹窗底部菜单。
  * 两条路径都真实触发 onClick -> removeLine(line.id)。
@@ -3162,6 +3199,160 @@ async function testBD(cdp, checks) {
   assert(checks, 'BD.D 次字标签仍在 <' + fmt3(w1) + '>', typeof row === 'string' && row.indexOf('<' + fmt3(w1) + '>') >= 0, J(row))
 }
 
+/* -------- BE：行首拖动（推土机）——热区改行首、字卡屏上不动、复用 stampLine -------- */
+
+async function testBE(cdp, checks) {
+  const ids = await ev(cdp, '__lrc.ids()')
+  const id = ids[0]
+  // 放大态（ppms ≥ WORD_CARD_PIXELS_PER_MS=0.3）才有 word 卡片与行首热区
+  await ev(cdp, '__lrc.setView(11500, 2200)')
+  await sleep(180)
+  const view = await ev(cdp, '__lrc.viewInfo()')
+  const ppms = view.pixelsPerMs
+  assert(checks, 'BE.setup 放大态 ppms ≥ 0.3', ppms >= 0.3, `ppms=${ppms}`)
+
+  const timesBefore = await ev(cdp, `__lrc.times(${J(id)})`)
+  const wordsBefore = await ev(cdp, `__lrc.wordTimes(${J(id)})`)
+  assert(checks, 'BE.setup 目标块只有一个行级时间戳', timesBefore.length === 1, J(timesBefore))
+  assert(
+    checks,
+    'BE.setup 目标块带字级时间戳（word 卡片）',
+    Array.isArray(wordsBefore) && wordsBefore.length === 2,
+    J(wordsBefore),
+  )
+  const handleCount = await ev(
+    cdp,
+    `(function(){var b=__lrc.block(${J(id)});return b?b.querySelectorAll('[data-line-start-handle]').length:-1})()`,
+  )
+  assert(checks, 'BE.setup 单时间戳行渲染行首热区', handleCount === 1, String(handleCount))
+  const innerCount = await ev(
+    cdp,
+    `(function(){var b=__lrc.block(${J(id)});return b?b.querySelectorAll('[data-word-inner]').length:-1})()`,
+  )
+  assert(checks, 'BE.setup word 内层定位容器存在', innerCount === 1, String(innerCount))
+
+  // 起拖点必须既在块内、又命中 4px 热区（热区确实挂在块根里）
+  const p = await ev(cdp, `__lrc.point(${J(id)}, -8)`)
+  const x0 = Math.round(p.x)
+  const y0 = Math.round(p.y)
+  const hitId = await ev(cdp, `__lrc.elementAt(${x0}, ${y0})`)
+  const hitHandle = await ev(
+    cdp,
+    `(function(){var el=document.elementFromPoint(${x0},${y0});return !!(el&&el.closest('[data-line-start-handle]'))})()`,
+  )
+  assert(checks, 'BE.setup 起拖点命中块本身', hitId === id, `hit=${hitId}`)
+  assert(checks, 'BE.setup 起拖点命中行首热区', hitHandle === true, `(${x0},${y0})`)
+
+  const rectBefore = await ev(cdp, `__lrc.rect(${J(id)})`)
+  const chipLeftBefore = await ev(cdp, chipLeftExpr(id))
+  const logBefore = await ev(cdp, '__lrc.logLen()')
+
+  let mid = null
+  await dragBlockEdge(cdp, id, 50, async () => {
+    mid = {
+      rect: await ev(cdp, `__lrc.rect(${J(id)})`),
+      chipLeft: await ev(cdp, chipLeftExpr(id)),
+      inner: await ev(cdp, wordInnerTransformExpr(id)),
+      guide: await ev(
+        cdp,
+        `(function(){var g=document.querySelector('[data-snap-guide]');return g?{display:g.style.display,ms:g.dataset.snapMs}:null})()`,
+      ),
+      logLen: await ev(cdp, '__lrc.logLen()'),
+      times: await ev(cdp, `__lrc.times(${J(id)})`),
+    }
+  })
+
+  const rectAfter = await ev(cdp, `__lrc.rect(${J(id)})`)
+  const timesAfter = await ev(cdp, `__lrc.times(${J(id)})`)
+  const wordsAfter = await ev(cdp, `__lrc.wordTimes(${J(id)})`)
+  const chipLeftAfter = await ev(cdp, chipLeftExpr(id))
+  const innerAfter = await ev(cdp, wordInnerTransformExpr(id))
+  const last = await ev(cdp, '__lrc.last()')
+  const logAfter = await ev(cdp, '__lrc.logLen()')
+
+  const expectedDeltaMs = Math.round(50 / ppms)
+  const expectedStart = timesBefore[0] + expectedDeltaMs
+
+  // BE.a 块左缘跟随指针；拖动中零 store 写入
+  assert(
+    checks,
+    'BE.a 拖动中块左缘前移 ≈50px',
+    mid !== null && Math.abs(mid.rect.left - rectBefore.left - 50) <= 2,
+    `Δleft=${mid ? (mid.rect.left - rectBefore.left).toFixed(1) : 'n/a'}`,
+  )
+  assert(
+    checks,
+    'BE.a 拖动中零 store 写入',
+    mid !== null && mid.logLen === logBefore && eq(mid.times, timesBefore),
+    `logLen=${mid ? mid.logLen : 'n/a'}/${logBefore} times=${mid ? J(mid.times) : 'n/a'}`,
+  )
+  assert(
+    checks,
+    'BE.a 拖动中辅助线显示且落在行首',
+    mid !== null && mid.guide !== null && mid.guide.display === 'block' &&
+      Math.abs(Number(mid.guide.ms) - (timesBefore[0] + 50 / ppms)) <= 1,
+    J(mid && mid.guide),
+  )
+  assert(
+    checks,
+    'BE.a 拖动中字卡屏上不动',
+    mid !== null && Math.abs(mid.chipLeft - chipLeftBefore) <= 1,
+    `Δchip=${mid ? (mid.chipLeft - chipLeftBefore).toFixed(2) : 'n/a'}`,
+  )
+  assert(
+    checks,
+    'BE.a 拖动中字卡由内层反向 transform 抵消',
+    mid !== null && typeof mid.inner === 'string' && mid.inner.indexOf('translate3d(-50') === 0,
+    J(mid && mid.inner),
+  )
+  assert(
+    checks,
+    'BE.a 松手后块左缘 ≈ 50px',
+    Math.abs(rectAfter.left - rectBefore.left - 50) <= 2,
+    `Δleft=${(rectAfter.left - rectBefore.left).toFixed(1)}`,
+  )
+
+  // BE.b 走 stampLine：一条 absolute + 只写行级项，字级全程不动
+  assert(
+    checks,
+    'BE.b 松手后行首 = 原行首 + 位移毫秒',
+    timesAfter.length === 1 && timesAfter[0] === expectedStart,
+    `${J(timesAfter)} 期望 ${expectedStart}`,
+  )
+  assert(checks, 'BE.b 字级时间戳全程未变', eq(wordsAfter, wordsBefore), `${J(wordsBefore)} -> ${J(wordsAfter)}`)
+  assert(
+    checks,
+    'BE.b 松手后字卡屏上仍在原位',
+    Math.abs(chipLeftAfter - chipLeftBefore) <= 1,
+    `Δchip=${(chipLeftAfter - chipLeftBefore).toFixed(2)}`,
+  )
+  assert(checks, 'BE.b 松手后内层 transform 已清理', innerAfter === '', J(innerAfter))
+  assert(checks, 'BE.b 日志恰好 +1', logAfter === logBefore + 1, `${logBefore} -> ${logAfter}`)
+  assert(checks, 'BE.b kind=manual-timestamp', last.kind === 'manual-timestamp', last.kind)
+  const delta = last.delta
+  const absValues = delta !== undefined && delta.mode === 'absolute' ? delta.values : null
+  assert(checks, 'BE.b delta.mode=absolute', absValues !== null, J(delta))
+  assert(
+    checks,
+    'BE.b values 只含一条行级项',
+    absValues !== null && absValues.length === 1 && absValues[0].lineId === id &&
+      absValues[0].wordIndex === null && absValues[0].timeMs === expectedStart,
+    J(absValues),
+  )
+
+  // BE.c 阈值内拖动 = 点击：零日志、块回原位
+  await dragBlockEdge(cdp, id, 1)
+  const logAfterClick = await ev(cdp, '__lrc.logLen()')
+  const rectAfterClick = await ev(cdp, `__lrc.rect(${J(id)})`)
+  assert(checks, 'BE.c 阈值内拖动零日志', logAfterClick === logAfter, `${logAfter} -> ${logAfterClick}`)
+  assert(
+    checks,
+    'BE.c 阈值内拖动后块回原位',
+    Math.abs(rectAfterClick.left - rectAfter.left) <= 1,
+    `Δleft=${(rectAfterClick.left - rectAfter.left).toFixed(2)}`,
+  )
+}
+
 const TESTS = [
   ['A', '多选拖动 → 一条 selection-offset 整组等量位移', testA],
   ['B', '拖动中零 store 写入', testB],
@@ -3220,6 +3411,7 @@ const TESTS = [
   ['BB', '设置面板：固定搜索与 footer / 过滤 / 吸附四项 / 既有项回归', testBB],
   ['BC', '设置：元数据前缀 mode 三态迁移（boot 读盘 + store 白名单）', testBC],
   ['BD', '字级清空导出：D4 链式向前继承（首字落行级 / 中间字落前一字 / 整行全清仍带标签 / 链头无行级跳过标签）', testBD],
+  ['BE', '行首拖动：热区改行首时间、字卡屏上不动、复用 stampLine 落 absolute', testBE],
 ]
 
 async function main() {

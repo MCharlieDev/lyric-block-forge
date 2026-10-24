@@ -6,27 +6,31 @@ import type { WordTimestamp } from '@core'
  * 只描述「怎么显示」，不承载写回语义；写回时按 `indices` 回原始
  * `wordTimestamps` 数组。`range` 是回到 `line.text` 的钥匙，
  * 不能假设 `text` 拼接后等于整行原文（首个标签前可能有前缀）。
+ *
+ * 同时间不再合并：每条 chip 恒为单个字，`indices` 恒为单元素数组，
+ * 但类型保留数组形态，避免改写消费端（命中 / 拖动 / 写回）。
  */
 export interface DisplayChip {
-  /** 组内按原 index 升序拼接的文本 */
+  /** 该 chip 的文本（同时间不合并，恒为单字） */
   text: string
-  /** 排序与合并用的时间；未打轴为 `null` */
+  /** 排序用的时间；未打轴为 `null` */
   timeMs: number | null
-  /** 组内原始 `wordTimestamps` 下标，按升序排列 */
+  /** 原始 `wordTimestamps` 下标（单元素数组；消费端仍按数组解析） */
   indices: number[]
-  /** 组内文本区间的并集：最小 start / 最大 end */
+  /** 该字在 `line.text` 中的区间 */
   range: { start: number; end: number }
-  /** 组内非 null 精度的最小值；全 null 时为 null */
+  /** 该字的打轴精度；未打轴为 `null` */
   precisionMs: number | null
 }
 
 /**
- * 把文本顺序的字级时间戳派生为「按时间升序、严格相等合并」的显示 chip。
+ * 把文本顺序的字级时间戳派生为「按时间升序、逐字成卡」的显示 chip。
  *
  * 规则：
  * - 排序：`timeMs` 升序；`null` 排最后；时间相等（含同为 `null`）按原 index 升序。
- * - 合并：排序后相邻且 `timeMs !== null` 且严格相等才合并；`null` 永不合并。
- * - 合并文本与 `indices` 均按原 index 升序；`range` 取组内 min start / max end。
+ *   **排序是阶梯分组的前提**：渲染层依赖「同时间的字相邻」来识别多元素组，不能动。
+ * - 不合并：同时间相邻的字各自成卡；同时间的相邻关系由上述排序保证，
+ *   供渲染层做阶梯（每张卡左缘同位、宽度累计）。
  * - 不修改入参；`wordTimes` 长度不足时按 `null` 处理。
  *
  * @param wordTimestamps 文本顺序的字级时间戳
@@ -54,32 +58,12 @@ export function deriveDisplayChips(
     return a.index - b.index
   })
 
-  const result: DisplayChip[] = []
-
-  for (const item of sorted) {
-    const last = result[result.length - 1]
-
-    // 只有「相邻 + 非 null + 严格相等」才合并
-    if (last !== undefined && item.timeMs !== null && last.timeMs === item.timeMs) {
-      last.text += item.text
-      last.indices.push(item.index)
-      last.range.start = Math.min(last.range.start, item.range.start)
-      last.range.end = Math.max(last.range.end, item.range.end)
-      if (item.precisionMs !== null) {
-        last.precisionMs =
-          last.precisionMs === null ? item.precisionMs : Math.min(last.precisionMs, item.precisionMs)
-      }
-      continue
-    }
-
-    result.push({
-      text: item.text,
-      timeMs: item.timeMs,
-      indices: [item.index],
-      range: { start: item.range.start, end: item.range.end },
-      precisionMs: item.precisionMs,
-    })
-  }
-
-  return result
+  // 逐字成卡：同时间不合并，只保留排序后的顺序
+  return sorted.map((item) => ({
+    text: item.text,
+    timeMs: item.timeMs,
+    indices: [item.index],
+    range: { start: item.range.start, end: item.range.end },
+    precisionMs: item.precisionMs,
+  }))
 }

@@ -19,7 +19,7 @@ import {
   WORD_CARD_PIXELS_PER_MS,
 } from './constants'
 import { LyricBlock, type SelectModifiers } from './LyricBlock'
-import { layoutWordChips, type BlockCardMode, type WordChipBox } from './blockLayout'
+import { layoutWordChips, stackWordChipWidths, type BlockCardMode, type WordChipBox } from './blockLayout'
 import { deriveDisplayChips, type DisplayChip } from './displayChips'
 import { layoutRows, type RowLayoutItem } from './rowLayout'
 import { measureLineWidths } from './textMeasure'
@@ -132,6 +132,8 @@ type DragMode =
   | 'multi'
   /** 字级拖动：只平移被按字卡（必要时由数据层联动行头） */
   | 'word'
+  /** 行首拖动（推土机）：只改行首时间，字级时间戳不动 */
+  | 'line-start'
 
 /** 一次按下的过程状态。整个过程不触发渲染，故放在 ref 里。 */
 interface DragSession {
@@ -166,6 +168,12 @@ interface DragSession {
   wordIndices?: number[]
   /** 字级拖动：被按下的字卡节点，位移直接写它的 inline style（`word` 模式） */
   wordChipEl?: HTMLElement
+  /** 行首拖动：按下时的块宽（像素），拖动中宽度 = 该值 - dx */
+  pressedWidthPx?: number
+  /** 行首拖动：块根原 inline 几何（命令式改写前捕获，撤销时原样还原） */
+  lineStartOrigin?: { left: string; width: string }
+  /** 行首拖动：内层 word 容器，反向 transform 让字卡在屏上不动 */
+  lineStartInner?: HTMLElement | null
 }
 
 /** 待确认的一次「重大改变」（多选拖动）：块保留临时位移停在吸附落点，等用户裁决。 */
@@ -301,10 +309,19 @@ export function LyricTrack() {
         wordTexts: wordMode ? row.chips.map((chip) => chip.text) : undefined,
         wordTimeTexts: wordMode ? row.chips.map((chip) => formatMiniTime(chip.timeMs)) : undefined,
       })
-      const wordChips =
-        wordMode && widths.wordChipWidthsPx !== null
-          ? layoutWordChips(
+      // 同时间的连续多字：宽度改为阶梯（左缘仍由 layoutWordChips 按时间算，只换宽度输入）
+      const wordChipWidthsPx =
+        widths.wordChipWidthsPx && widths.wordChipContentWidthsPx
+          ? stackWordChipWidths(
               widths.wordChipWidthsPx,
+              widths.wordChipContentWidthsPx,
+              row.chips.map((chip) => chip.timeMs),
+            )
+          : widths.wordChipWidthsPx
+      const wordChips =
+        wordMode && wordChipWidthsPx !== null
+          ? layoutWordChips(
+              wordChipWidthsPx,
               row.chips.map((chip) => chip.timeMs),
               row.startMs,
               snapshot.pixelsPerMs,
@@ -431,7 +448,7 @@ export function LyricTrack() {
     delete guide.dataset.snapMs
   }
 
-  /** 撤销本会话留下的全部命令式样式（transform / 层级 / 光标）与对齐辅助线。 */
+  /** 撤销本会话留下的全部命令式样式（transform / 层级 / 光标 / 行首几何）与对齐辅助线。 */
   const clearSessionStyles = (session: DragSession): void => {
     for (const el of session.nodes.values()) {
       el.style.transform = ''
@@ -444,6 +461,18 @@ export function LyricTrack() {
       session.wordChipEl.style.transform = ''
       session.wordChipEl.style.zIndex = ''
       session.wordChipEl.style.cursor = ''
+    }
+    // 行首拖动：命令式改过声明式几何（left / width），必须按按下时的 inline 值原样还原，
+    // 否则「点击 / 未越阈值」不触发 store 写入时 React 不会重写这两项，块会停在拖动位置
+    if (session.lineStartOrigin !== undefined) {
+      const el = session.nodes.get(session.pressedLineId)
+      if (el !== undefined) {
+        el.style.left = session.lineStartOrigin.left
+        el.style.width = session.lineStartOrigin.width
+      }
+    }
+    if (session.lineStartInner !== undefined && session.lineStartInner !== null) {
+      session.lineStartInner.style.transform = ''
     }
     hideGuide()
   }
@@ -521,6 +550,38 @@ export function LyricTrack() {
       ctrl: event.ctrlKey,
       meta: event.metaKey,
       shift: event.shiftKey,
+    }
+
+    // 行首拖动（推土机）：命中块左缘 4px 热区，且该行只有一个行级时间戳。
+    // 只改行首时间、不动字级；拖动中零 store 写入，松手才落一条 absolute 日志。
+    const lineStartHandle = (event.target as HTMLElement).closest<HTMLElement>(
+      '[data-line-start-handle]',
+    )
+    if (lineStartHandle !== null && pressedLayout !== undefined && pressedLayout.row.times.length === 1) {
+      // 按块即挂起跟随（与其它拖动同口径）：拖动期间视口不动，否则拖不准
+      kernel.cancelFollowAnimation()
+      kernel.suspendFollow()
+      dragRef.current = {
+        pointerId: event.pointerId,
+        pressedLineId,
+        startClientX: event.clientX,
+        mode: 'line-start',
+        dragging: false,
+        modifiers,
+        pressedStartMs: pressedLayout.row.startMs,
+        pressedIsUntimed: false,
+        moveLineIds: [pressedLineId],
+        excludeTimesMs: pressedLayout.row.times,
+        // 只动本块：nodes 仍收本块，供 clearSessionStyles 统一收口
+        nodes: new Map([[pressedLineId, blockEl]]),
+        blockedEl: null,
+        followSuspended: true,
+        pressedWidthPx: pressedLayout.widthPx,
+        lineStartOrigin: { left: blockEl.style.left, width: blockEl.style.width },
+        lineStartInner: blockEl.querySelector<HTMLElement>('[data-word-inner]'),
+      }
+      event.currentTarget.setPointerCapture(event.pointerId)
+      return
     }
 
     // 放大态按到字卡：进入字级拖动（不参与行级选中与整行平移）。
@@ -641,6 +702,27 @@ export function LyricTrack() {
     // 修饰键点击不参与拖动
     if (session.mode === 'click') return
     const rawPx = event.clientX - session.startClientX
+    // 行首拖动：块左缘跟随指针、宽度反向补偿，内层 word 容器反向位移把字卡钉在屏上。
+    // 位移夹到「时间 ≥ 0」的下界；不吸附、不写 store。
+    if (session.mode === 'line-start') {
+      const minDx = -session.pressedStartMs * snapshot.pixelsPerMs
+      const dx = Math.max(rawPx, minDx)
+      if (!session.dragging) {
+        if (Math.abs(dx) < DRAG_THRESHOLD_PX) return
+        session.dragging = true
+      }
+      const el = session.nodes.get(session.pressedLineId)
+      if (el !== undefined) {
+        el.style.left = `${session.pressedStartMs * snapshot.pixelsPerMs + dx}px`
+        const baseWidth = session.pressedWidthPx ?? el.getBoundingClientRect().width
+        el.style.width = `${Math.max(0, baseWidth - dx)}px`
+      }
+      if (session.lineStartInner !== undefined && session.lineStartInner !== null) {
+        session.lineStartInner.style.transform = `translate3d(${-dx}px, 0, 0)`
+      }
+      showGuide(session.pressedStartMs + dx / snapshot.pixelsPerMs)
+      return
+    }
     // 字级拖动：只挪被按的那张字卡，不吸附、不参与行级位移
     if (session.mode === 'word') {
       if (!session.dragging) {
@@ -744,6 +826,26 @@ export function LyricTrack() {
       ) {
         nudgeWordsByOffset(session.wordLineId, session.wordIndices, deltaMs)
       }
+      return
+    }
+
+    // 行首拖动：换算毫秒后复用 stampLine（一条 manual-timestamp + absolute，只写行级项）。
+    // 位移夹到「时间 ≥ 0」；|deltaMs| < 10 视为点击，不写日志。
+    if (session.mode === 'line-start') {
+      const minDx = -session.pressedStartMs * snapshot.pixelsPerMs
+      const dx = Math.max(event.clientX - session.startClientX, minDx)
+      const deltaMs = Math.round(dx / snapshot.pixelsPerMs)
+      clearSessionStyles(session)
+      if (Math.abs(deltaMs) < DRAG_MIN_DELTA_MS) {
+        handleSelectBlock(session.pressedLineId, session.modifiers)
+        return
+      }
+      const targetMs = session.pressedStartMs + deltaMs
+      if (targetMs < 0) {
+        showToast('行首时间不能为负')
+        return
+      }
+      stampLine(session.pressedLineId, targetMs)
       return
     }
 
