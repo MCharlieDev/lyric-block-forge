@@ -4,6 +4,7 @@ import type {
   LyricLineRole,
   LyricMetadata,
   Suggestion,
+  Timestamp,
   ValidationIssue,
   WordTimestamp,
 } from '../types'
@@ -254,6 +255,34 @@ function splitEnhancedText(content: string): { text: string; words: WordTimestam
 }
 
 /**
+ * 导入时拉齐「字级时间早于行级时间」的错位（A 错位）。
+ *
+ * 行级时间是本行的绝对锚点：字级时间不能早于行起点，否则绝对定位下
+ * 字卡会渲染到块左缘之外（blockLayout 允许负 leftPx）。
+ * 只做单向钳制，不排序 —— 行内字级乱序（B 错位）原样保留。
+ */
+function clampWordsToLineStart(
+  words: readonly WordTimestamp[],
+  anchor: Timestamp | undefined,
+): WordTimestamp[] {
+  if (words.length === 0 || anchor === undefined) {
+    return [...words]
+  }
+  const lineStartMs = anchor.timeMs
+  return words.map((word) => {
+    if (word.timeMs >= lineStartMs) {
+      return word
+    }
+    return {
+      ...word,
+      timeMs: lineStartMs,
+      // 精度取两者更细者：否则存储 15500 + 精度 1000 会导出成 16000
+      precisionMs: Math.min(word.precisionMs, anchor.precisionMs),
+    }
+  })
+}
+
+/**
  * 构造一条歌词行。
  *
  * @param text 行文本
@@ -473,13 +502,19 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
     const enhanced = hasWordTags ? splitEnhancedText(content) : { text: content, words: [] as WordTimestamp[] }
 
     // 一行多个时间标签属于同一条歌词：保留为一个行的多个时间戳，不拆分
+    const lineTimes = timeMatches.map((match) => parseTimeParts(match))
+    // buildLine 只接收 { timeMs, precisionMs } 轻量对，拿不到完整 Timestamp；
+    // 这里先构造行级时间戳，用首项作为字级拉齐的绝对锚点（A 错位）。
+    const lineTimestamps = lineTimes.map((time) =>
+      createTimestamp('line', time.timeMs, 'import', time.precisionMs),
+    )
     placeLine(
       buildLine(
         enhanced.text,
         'main',
         rawLine,
-        timeMatches.map((match) => parseTimeParts(match)),
-        enhanced.words,
+        lineTimes,
+        clampWordsToLineStart(enhanced.words, lineTimestamps[0]),
       ),
     )
   }
