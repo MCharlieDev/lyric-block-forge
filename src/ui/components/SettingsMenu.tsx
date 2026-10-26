@@ -201,17 +201,37 @@ const SECTIONS: SettingsSection[] = [
       {
         id: 'confirmMajorChange',
         label: '重大改变前询问',
-        keywords: '确认 询问 重大改变',
+        keywords: '确认 询问 重大改变 正文 行级 toast',
         control: ({ settings, update }) => (
-          <label className={`${checkboxRowClass} mt-2`}>
-            <input
-              type="checkbox"
-              checked={settings.confirmMajorChange}
-              onChange={(event) => update({ confirmMajorChange: event.target.checked })}
-              className="accent-accent"
-            />
-            重大改变前询问
-          </label>
+          <div className="mt-2 flex flex-col gap-1">
+            <label className={checkboxRowClass}>
+              <input
+                type="checkbox"
+                checked={settings.confirmMajorChange}
+                onChange={(event) => update({ confirmMajorChange: event.target.checked })}
+                className="accent-accent"
+              />
+              重大改变前询问
+            </label>
+            <label className={checkboxRowClass}>
+              <input
+                type="checkbox"
+                checked={settings.confirmTextChange}
+                onChange={(event) => update({ confirmTextChange: event.target.checked })}
+                className="accent-accent"
+              />
+              修改正文前弹窗确认
+            </label>
+            <label className={checkboxRowClass}>
+              <input
+                type="checkbox"
+                checked={settings.confirmClearLineTime}
+                onChange={(event) => update({ confirmClearLineTime: event.target.checked })}
+                className="accent-accent"
+              />
+              清空行级前弹窗确认
+            </label>
+          </div>
         ),
       },
     ],

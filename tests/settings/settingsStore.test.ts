@@ -113,3 +113,31 @@ describe('settingsStore · metadataPrefixRules', () => {
     expect(second[0]).not.toBe(DEFAULT_SETTINGS.metadataPrefixRules[0])
   })
 })
+
+describe('settingsStore · 确认形态设置', () => {
+  it('两项确认默认均为弹窗（true）', () => {
+    const settings = useSettingsStore.getState().settings
+    expect(settings.confirmTextChange).toBe(true)
+    expect(settings.confirmClearLineTime).toBe(true)
+    expect(DEFAULT_SETTINGS.confirmTextChange).toBe(true)
+    expect(DEFAULT_SETTINGS.confirmClearLineTime).toBe(true)
+  })
+
+  it('非布尔值回退默认 true', () => {
+    useSettingsStore.getState().hydrate({ confirmTextChange: 'no', confirmClearLineTime: null })
+    let settings = useSettingsStore.getState().settings
+    expect(settings.confirmTextChange).toBe(true)
+    expect(settings.confirmClearLineTime).toBe(true)
+
+    useSettingsStore.getState().hydrate({ confirmTextChange: 0, confirmClearLineTime: undefined })
+    settings = useSettingsStore.getState().settings
+    expect(settings.confirmTextChange).toBe(true)
+    expect(settings.confirmClearLineTime).toBe(true)
+  })
+
+  it('hydrate 显式 false 时保留（读盘往返）', () => {
+    useSettingsStore.getState().hydrate({ confirmTextChange: false, confirmClearLineTime: false })
+    expect(useSettingsStore.getState().settings.confirmTextChange).toBe(false)
+    expect(useSettingsStore.getState().settings.confirmClearLineTime).toBe(false)
+  })
+})

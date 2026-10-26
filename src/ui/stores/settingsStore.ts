@@ -101,6 +101,10 @@ export interface AppSettings {
    * 想要拖动后立即落盘的用户可在设置里关掉（弹窗内勾选「以后不再显示」亦写此项）。
    */
   confirmMajorChange: boolean
+  /** 改正文前是否弹窗确认；false = 仅 toast 提示 */
+  confirmTextChange: boolean
+  /** 清空行级时间前是否弹窗确认；false = 仅 toast 提示 */
+  confirmClearLineTime: boolean
   /**
    * 视口跟随的恢复方式。
    *
@@ -186,6 +190,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   closeMetadataPrefixDialogOnBackdropClick: false,
   timestampPrecisionMs: 1,
   confirmMajorChange: true,
+  confirmTextChange: true,
+  confirmClearLineTime: true,
   followResumeMode: 'snap',
   pauseAudioOnPan: true,
   pauseAudioOnSeek: true,
@@ -250,6 +256,14 @@ function normalizeSettings(stored: unknown): AppSettings {
       typeof record.confirmMajorChange === 'boolean'
         ? record.confirmMajorChange
         : DEFAULT_SETTINGS.confirmMajorChange,
+    confirmTextChange:
+      typeof record.confirmTextChange === 'boolean'
+        ? record.confirmTextChange
+        : DEFAULT_SETTINGS.confirmTextChange,
+    confirmClearLineTime:
+      typeof record.confirmClearLineTime === 'boolean'
+        ? record.confirmClearLineTime
+        : DEFAULT_SETTINGS.confirmClearLineTime,
     followResumeMode:
       record.followResumeMode === 'snap' || record.followResumeMode === 'pause'
         ? record.followResumeMode

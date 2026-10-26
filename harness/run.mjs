@@ -318,6 +318,45 @@ const BOOTSTRAP = `
       },
       dialogSaveDisabled: function () { var b = api._dialogBtn('保存'); return b ? b.disabled === true : null; },
       clickDialogSave: function () { var b = api._dialogBtn('保存'); if (!b) return false; b.click(); return true; },
+      // 保存前确认弹窗：面板存在 / 确认 / 取消
+      confirmOpen: function () { return document.querySelector('[data-confirm-dialog]') !== null; },
+      clickConfirmOk: function () {
+        var b = document.querySelector('[data-confirm-ok]'); if (!b) return false; b.click(); return true;
+      },
+      clickConfirmCancel: function () {
+        var b = document.querySelector('[data-confirm-cancel]'); if (!b) return false; b.click(); return true;
+      },
+      // 弹窗内「以后用 toast 提示」勾选框
+      confirmDontAskChecked: function () { return !!document.querySelector('[data-confirm-dont-ask]:checked'); },
+      clickConfirmDontAsk: function () {
+        var el = document.querySelector('[data-confirm-dont-ask]'); if (!el) return false; el.click(); return true;
+      },
+      // 正文输入框的当前 DOM 值：验证「取消后不写入」时框架把值回写成 drafts.text
+      primaryTextValue: function () {
+        var el = document.querySelector('[role="dialog"] [data-primary-text]');
+        return el ? el.value : null;
+      },
+      // 切分字块：入口按钮 → 二级弹窗 → 点第一道竖缝 → 确定（只写草案，不落 store）
+      clickCutEntry: function () { var b = api._dialogBtn('切分字块'); if (!b) return false; b.click(); return true; },
+      cutDialogOpen: function () {
+        return document.querySelector('[role="dialog"][aria-label="切分字块"]') !== null;
+      },
+      clickFirstSeam: function () {
+        var b = document.querySelector('[role="dialog"][aria-label="切分字块"] button[aria-label^="在第"]');
+        if (!b) return false; b.click(); return true;
+      },
+      clickCutOk: function () {
+        var dlg = document.querySelector('[role="dialog"][aria-label="切分字块"]');
+        if (!dlg) return false;
+        var btns = dlg.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+          if ((btns[i].textContent || '').trim() === '确定') { btns[i].click(); return true; }
+        }
+        return false;
+      },
+      cutDraftRows: function () {
+        return document.querySelectorAll('[role="dialog"] input[aria-label^="切分块"]').length;
+      },
       wordTimes: function (id) {
         var st = store.getState();
         var line = st.document.lines.find(function (l) { return l.id === id; });
@@ -2103,6 +2142,9 @@ async function testAE(cdp, checks) {
   assert(checks, 'AE.空串合法（非 aria-invalid）', (await ev(cdp, '__lrc.lineTimeInvalid()')) === false, 'invalid')
   await ev(cdp, '__lrc.clickDialogSave()')
   await sleep(60)
+  // 保存前确认（l0 有字级时间，清行级会连带清字级）：点「继续保存」放行
+  await ev(cdp, '__lrc.clickConfirmOk()')
+  await sleep(60)
 
   const last = await ev(cdp, '__lrc.last()')
   assert(checks, 'AE.落一条 manual-timestamp', last.kind === 'manual-timestamp', J(last.kind))
@@ -2127,6 +2169,9 @@ async function testAF(cdp, checks) {
   await ev(cdp, `__lrc.setLineTimeInput('')`)
   await sleep(30)
   await ev(cdp, '__lrc.clickDialogSave()')
+  await sleep(60)
+  // 保存前确认（l0 有字级时间）：点「继续保存」放行
+  await ev(cdp, '__lrc.clickConfirmOk()')
   await sleep(60)
 
   await ev(cdp, '__lrc.store.getState().undoLastAction()')
@@ -2184,6 +2229,9 @@ async function testAH(cdp, checks) {
   await sleep(30)
   await ev(cdp, '__lrc.clickDialogSave()')
   await sleep(60)
+  // 保存前确认（l0 有字级时间）：点「继续保存」放行
+  await ev(cdp, '__lrc.clickConfirmOk()')
+  await sleep(60)
 
   const after = exportRows(await ev(cdp, '__lrc.buildExport(1)'))
   const row = after.find((s) => s.indexOf(l0text) >= 0)
@@ -2203,6 +2251,9 @@ async function testAI(cdp, checks) {
   await sleep(30)
   await ev(cdp, '__lrc.clickDialogSave()')
   await sleep(100)
+  // 保存前确认（l0 有字级时间）：点「继续保存」放行
+  await ev(cdp, '__lrc.clickConfirmOk()')
+  await sleep(60)
 
   const entry = await ev(cdp, '__lrc.last()')
   assert(checks, 'AI.清空落一条 manual-timestamp（不新增 kind）', entry.kind === 'manual-timestamp', J(entry.kind))
@@ -3374,6 +3425,242 @@ async function testBE(cdp, checks) {
   )
 }
 
+/* -------- BF：保存前确认（清行级 / 改正文 / 双后果聚合成一个框 / 无字级不弹） -------- */
+
+/** 主文本框写入（React 受控：原生 setter + input 事件）。 */
+async function setPrimaryText(cdp, value) {
+  return ev(
+    cdp,
+    `__lrc._setNativeValue(document.querySelector('[role="dialog"] [data-primary-text]'), ${J(value)})`,
+  )
+}
+
+/** 确认框里的后果文案（li / 单条 p 的文本数组）。 */
+async function confirmTexts(cdp) {
+  return ev(
+    cdp,
+    `Array.from(document.querySelectorAll('[data-confirm-dialog] li, [data-confirm-dialog] p')).map(function (el) { return (el.textContent || '').trim(); })`,
+  )
+}
+
+async function testBF(cdp, checks) {
+  const ids = await ev(cdp, '__lrc.ids()')
+  const [l0, l1] = ids
+
+  // a. 清行级 → 保存：弹确认；取消 → 数据一概不变；再保存 → 确认 → 落盘
+  await clickBlock(cdp, l0)
+  await openLineSheet(cdp, 0)
+  const n0 = await ev(cdp, '__lrc.logLen()')
+  await ev(cdp, `__lrc.setLineTimeInput('')`)
+  await sleep(30)
+  await ev(cdp, '__lrc.clickDialogSave()')
+  await sleep(60)
+  assert(checks, 'BF.a 清行级保存 → 弹确认框', (await ev(cdp, '__lrc.confirmOpen()')) === true, 'confirm')
+  assert(checks, 'BF.a 弹确认时零落盘', (await ev(cdp, '__lrc.logLen()')) === n0, `${n0}`)
+
+  // 任务书原文写「点取消 → confirmOpen 仍为真」，与清单「取消即 setConfirmOpen(false)」冲突；
+  // 按取消语义断言：确认框关闭、行编辑弹窗仍在、数据未变，可再次点保存重新弹框。
+  await ev(cdp, '__lrc.clickConfirmCancel()')
+  await sleep(60)
+  assert(checks, 'BF.a 取消后确认框关闭', (await ev(cdp, '__lrc.confirmOpen()')) === false, 'confirm')
+  assert(checks, 'BF.a 取消后行编辑弹窗仍在', (await ev(cdp, '__lrc.dialogOpen()')) === true, 'dialog')
+  assert(checks, 'BF.a 取消后零落盘', (await ev(cdp, '__lrc.logLen()')) === n0, `${n0}`)
+  assert(checks, 'BF.a 取消后行级仍 [12120]', eq(await ev(cdp, `__lrc.times(${J(l0)})`), [12120]), J(await ev(cdp, `__lrc.times(${J(l0)})`)))
+  assert(checks, 'BF.a 取消后字级仍 [12008,13600]', eq(await ev(cdp, `__lrc.wordTimes(${J(l0)})`), [12008, 13600]), J(await ev(cdp, `__lrc.wordTimes(${J(l0)})`)))
+
+  await ev(cdp, '__lrc.clickDialogSave()')
+  await sleep(60)
+  assert(checks, 'BF.a 再点保存仍弹确认', (await ev(cdp, '__lrc.confirmOpen()')) === true, 'confirm')
+  await ev(cdp, '__lrc.clickConfirmOk()')
+  await sleep(60)
+  assert(checks, 'BF.a 确认后日志 +1', (await ev(cdp, '__lrc.logLen()')) === n0 + 1, `${n0}`)
+  assert(checks, 'BF.a 行级已清空 []', eq(await ev(cdp, `__lrc.times(${J(l0)})`), []), J(await ev(cdp, `__lrc.times(${J(l0)})`)))
+  assert(checks, 'BF.a 字级时间全 null', eq(await ev(cdp, `__lrc.wordTimes(${J(l0)})`), [null, null]), J(await ev(cdp, `__lrc.wordTimes(${J(l0)})`)))
+  await openLineSheet(cdp, 0)
+  assert(checks, 'BF.a 切分槽位保留（2 个字级输入框）', (await ev(cdp, '__lrc.wordInputCount()')) === 2, String(await ev(cdp, '__lrc.wordInputCount()')))
+  await ev(cdp, '__lrc.closeDialog()')
+
+  // a 的清空已落盘（字级全 null），b/c 需要「有字级时间」的前置：
+  // 撤销一步复原行级与字级，避免用例之间互相污染（确认判据是 words.some(initialMs !== null)）
+  await ev(cdp, '__lrc.store.getState().undoLastAction()')
+  await sleep(60)
+  assert(
+    checks,
+    'BF.b 前置：撤销 a 的清空后字级复原 [12008,13600]',
+    eq(await ev(cdp, `__lrc.wordTimes(${J(l0)})`), [12008, 13600]),
+    J(await ev(cdp, `__lrc.wordTimes(${J(l0)})`)),
+  )
+
+  // b. 改正文 → 输入瞬间即弹文本确认；取消 → 输入框回原文、零落盘、字级不变
+  await clickBlock(cdp, l0)
+  await openLineSheet(cdp, 0)
+  const nB = await ev(cdp, '__lrc.logLen()')
+  const textB0 = await ev(cdp, '__lrc.primaryTextValue()')
+  const textB = '夜色渐深 风穿过长街（改）'
+  await setPrimaryText(cdp, textB)
+  await sleep(60)
+  assert(checks, 'BF.b 输入瞬间即弹文本确认', (await ev(cdp, '__lrc.confirmOpen()')) === true, 'confirm')
+  assert(
+    checks,
+    'BF.b 确认弹出时输入框仍是原文（确认前不写入）',
+    (await ev(cdp, '__lrc.primaryTextValue()')) === textB0,
+    J(await ev(cdp, '__lrc.primaryTextValue()')),
+  )
+  const itemsB = await confirmTexts(cdp)
+  assert(checks, 'BF.b 单后果只一条文案', itemsB.length === 1, J(itemsB))
+  assert(checks, 'BF.b 文案为「修改正文」', itemsB.length === 1 && itemsB[0].indexOf('修改正文') >= 0, J(itemsB))
+
+  await ev(cdp, '__lrc.clickConfirmCancel()')
+  await sleep(60)
+  assert(checks, 'BF.b 取消后确认框关闭', (await ev(cdp, '__lrc.confirmOpen()')) === false, 'confirm')
+  assert(
+    checks,
+    'BF.b 取消后输入框回到原文',
+    (await ev(cdp, '__lrc.primaryTextValue()')) === textB0,
+    J(await ev(cdp, '__lrc.primaryTextValue()')),
+  )
+  assert(checks, 'BF.b 取消后零落盘', (await ev(cdp, '__lrc.logLen()')) === nB, `${nB}`)
+  assert(
+    checks,
+    'BF.b 取消后字级不变 [12008,13600]',
+    eq(await ev(cdp, `__lrc.wordTimes(${J(l0)})`), [12008, 13600]),
+    J(await ev(cdp, `__lrc.wordTimes(${J(l0)})`)),
+  )
+
+  // c. 改正文 → 确认 → 文本生效；本会话再改不再弹（连续两次输入，第二次直接生效）
+  const textC1 = '夜色渐深 风穿过长街（改一）'
+  await setPrimaryText(cdp, textC1)
+  await sleep(60)
+  assert(checks, 'BF.c 再次输入重新弹确认', (await ev(cdp, '__lrc.confirmOpen()')) === true, 'confirm')
+  await ev(cdp, '__lrc.clickConfirmOk()')
+  await sleep(60)
+  assert(checks, 'BF.c 确认后确认框关闭', (await ev(cdp, '__lrc.confirmOpen()')) === false, 'confirm')
+  assert(
+    checks,
+    'BF.c 确认后正文生效',
+    (await ev(cdp, '__lrc.primaryTextValue()')) === textC1,
+    J(await ev(cdp, '__lrc.primaryTextValue()')),
+  )
+  const textC2 = '夜色渐深 风穿过长街（改二）'
+  await setPrimaryText(cdp, textC2)
+  await sleep(60)
+  assert(checks, 'BF.c 本会话第二次改正文不再弹', (await ev(cdp, '__lrc.confirmOpen()')) === false, 'confirm')
+  assert(
+    checks,
+    'BF.c 第二次输入直接生效',
+    (await ev(cdp, '__lrc.primaryTextValue()')) === textC2,
+    J(await ev(cdp, '__lrc.primaryTextValue()')),
+  )
+  assert(checks, 'BF.c 未保存 → 零落盘', (await ev(cdp, '__lrc.logLen()')) === nB, `${nB}`)
+  await ev(cdp, '__lrc.closeDialog()')
+
+  // d. 改正文但该行无字级时间（l1）→ 输入不弹，保存直接落盘
+  await clickBlock(cdp, l1)
+  await openLineSheet(cdp, 1)
+  const nD = await ev(cdp, '__lrc.logLen()')
+  const textD = '我把名字写在车窗上（改）'
+  await setPrimaryText(cdp, textD)
+  await sleep(60)
+  assert(checks, 'BF.d 无字级时间 → 输入不弹', (await ev(cdp, '__lrc.confirmOpen()')) === false, 'confirm')
+  assert(
+    checks,
+    'BF.d 文本直接生效',
+    (await ev(cdp, '__lrc.primaryTextValue()')) === textD,
+    J(await ev(cdp, '__lrc.primaryTextValue()')),
+  )
+  await ev(cdp, '__lrc.clickDialogSave()')
+  await sleep(60)
+  assert(checks, 'BF.d 保存不弹确认', (await ev(cdp, '__lrc.confirmOpen()')) === false, 'confirm')
+  assert(checks, 'BF.d 直接落盘 +1', (await ev(cdp, '__lrc.logLen()')) === nD + 1, `${nD}`)
+  const rowsD = exportRows(await ev(cdp, '__lrc.buildExport(1)'))
+  assert(checks, 'BF.d 正文已更新', rowsD.some((s) => stripTags(s) === textD), J(rowsD))
+
+  // e. 有切分草案 + 清行级 → 保存：行级确认文案追加「切分草案将无法落盘」
+  await clickBlock(cdp, l0)
+  await openLineSheet(cdp, 0)
+  assert(checks, 'BF.e 切分入口可点（有锚点）', (await ev(cdp, '__lrc.clickCutEntry()')) === true, 'cut')
+  await sleep(60)
+  assert(checks, 'BF.e 切分弹窗已开', (await ev(cdp, '__lrc.cutDialogOpen()')) === true, 'cut')
+  await ev(cdp, '__lrc.clickFirstSeam()')
+  await sleep(30)
+  await ev(cdp, '__lrc.clickCutOk()')
+  await sleep(60)
+  assert(
+    checks,
+    'BF.e 草案已生成（2 块）',
+    (await ev(cdp, '__lrc.cutDraftRows()')) === 2,
+    String(await ev(cdp, '__lrc.cutDraftRows()')),
+  )
+  await ev(cdp, `__lrc.setLineTimeInput('')`)
+  await sleep(30)
+  const nE = await ev(cdp, '__lrc.logLen()')
+  await ev(cdp, '__lrc.clickDialogSave()')
+  await sleep(60)
+  assert(checks, 'BF.e 清行级保存 → 弹行级确认', (await ev(cdp, '__lrc.confirmOpen()')) === true, 'confirm')
+  assert(checks, 'BF.e 弹确认时零落盘', (await ev(cdp, '__lrc.logLen()')) === nE, `${nE}`)
+  const itemsE = await confirmTexts(cdp)
+  assert(
+    checks,
+    'BF.e 文案含「清空行级」',
+    itemsE.some((s) => s.indexOf('清空行级') >= 0),
+    J(itemsE),
+  )
+  assert(
+    checks,
+    'BF.e 文案含「切分草案…无法落盘」缺口说明',
+    itemsE.some((s) => s.indexOf('切分草案') >= 0 && s.indexOf('无法落盘') >= 0),
+    J(itemsE),
+  )
+  await ev(cdp, '__lrc.clickConfirmCancel()')
+  await sleep(60)
+  assert(checks, 'BF.e 取消后确认框关闭', (await ev(cdp, '__lrc.confirmOpen()')) === false, 'confirm')
+  await ev(cdp, '__lrc.closeDialog()')
+}
+
+/* ---------------- BG：弹窗内勾选「以后用 toast 提示」 ---------------- */
+async function testBG(cdp, checks) {
+  const ids = await ev(cdp, '__lrc.ids()')
+  const [l0] = ids
+  // 前置：确保初始为「弹窗」形态（组间不重置 settings，只在本组内自查）
+  await ev(cdp, '__lrc.updateSettings({ confirmClearLineTime: true })')
+
+  // a. 清行级 → 保存 → 弹确认 → 勾选 → 确认 → 设置落为 false，本次保存照常执行
+  await clickBlock(cdp, l0)
+  await openLineSheet(cdp, 0)
+  await ev(cdp, `__lrc.setLineTimeInput('')`)
+  await sleep(30)
+  await ev(cdp, '__lrc.clickDialogSave()')
+  await sleep(60)
+  await ev(cdp, '__lrc.clickConfirmDontAsk()')
+  await sleep(30)
+  await ev(cdp, '__lrc.clickConfirmOk()')
+  await sleep(60)
+  const afterA = await ev(cdp, '__lrc.settings().confirmClearLineTime')
+  assert(checks, 'BG.a 勾选确认后 confirmClearLineTime = false', afterA === false, J(afterA))
+
+  // b. 撤销复原出「可再次触发后果」的前置；再清行级 → 保存：不弹窗、只 toast
+  await ev(cdp, '__lrc.store.getState().undoLastAction()')
+  await sleep(60)
+  await openLineSheet(cdp, 0)
+  await ev(cdp, `__lrc.setLineTimeInput('')`)
+  await sleep(30)
+  await ev(cdp, '__lrc.clickDialogSave()')
+  await sleep(60)
+  const noConfirm = await ev(cdp, '__lrc.confirmOpen()')
+  const toast = await ev(cdp, '__lrc.toastText()')
+  assert(
+    checks,
+    'BG.b 降级后不再弹窗，toast 含「已清空行级时间」',
+    noConfirm === false && typeof toast === 'string' && toast.indexOf('已清空行级时间') >= 0,
+    J({ noConfirm, toast }),
+  )
+
+  // c. 复位，供后续组使用（组间不重置 settings）
+  await ev(cdp, '__lrc.updateSettings({ confirmClearLineTime: true })')
+  const afterC = await ev(cdp, '__lrc.settings().confirmClearLineTime')
+  assert(checks, 'BG.c 复位后 confirmClearLineTime = true', afterC === true, J(afterC))
+}
+
 const TESTS = [
   ['A', '多选拖动 → 一条 selection-offset 整组等量位移', testA],
   ['B', '拖动中零 store 写入', testB],
@@ -3433,6 +3720,8 @@ const TESTS = [
   ['BC', '设置：元数据前缀 mode 三态迁移（boot 读盘 + store 白名单）', testBC],
   ['BD', '字级清空导出：D4 链式向前继承（首字落行级 / 中间字落前一字 / 整行全清仍带标签 / 链头无行级跳过标签）', testBD],
   ['BE', '行首拖动：热区改行首时间、拖动中字卡不动、松手推平被越过的字卡', testBE],
+  ['BF', '确认时机：正文输入即确认 / 行级保存时确认（含草案缺口）', testBF],
+  ['BG', '弹窗内勾选「以后用 toast 提示」：写对应设置项、本次照常执行、下次只 toast', testBG],
 ]
 
 async function main() {
