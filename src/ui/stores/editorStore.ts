@@ -28,7 +28,9 @@ import {
   type ReplayState,
   type Timestamp,
   type ValidationIssue,
+  type WordSegment,
 } from '@core'
+import { deriveInitialWordTimes, resolveCutAnchor } from '@core/lyrics/wordTimes'
 import { createDemoSession } from './demoSession'
 import { formatDuration, formatTimecode } from '../utils/format'
 
@@ -301,6 +303,30 @@ export interface EditorState {
    * @param lineId 目标行 ID
    */
   clearLineTime: (lineId: string) => void
+  /**
+   * 提交一行的字块切分（写入新切分 + 初始字级时间，必要时补行级时间），可撤销。
+   *
+   * 锚点三层回退：行级时间 → 首字时间 → 调用方传入的时间轴占位起点。
+   * 首块 = 锚点，后续每块顺延 `WORD_CUT_DEFAULT_GAP_MS`，越界下一行不封顶。
+   *
+   * 只写**一条** `word-segments` 记录，直接写绝对值（不走 `setLineTime` 的 offset
+   * 平移逻辑，也不走 `setWordTimestamps` 的首字拉齐），撤销一次全退。
+   * 对同一行再次提交 = 新记录整体覆盖旧切分与旧字级时间。
+   *
+   * 三层锚点全空时 no-op，不写日志。
+   *
+   * @param lineId 目标行 ID
+   * @param segments 切分块（UTF-16 偏移，首尾相接、全覆盖）
+   * @param opts `placementStartMs`：时间轴占位起点，前两层锚点都为空时使用；
+   *   `times`：调用方指定每块时间，长度须与 `segments` 一致且均为非负有限数，
+   *   传入时替代默认的锚点 + 200ms 序列
+   * @returns `ok=false` 时 `reason` 区分「无锚点」「行不存在」「时间非法」
+   */
+  commitWordSegments: (
+    lineId: string,
+    segments: WordSegment[],
+    opts?: { placementStartMs?: number; times?: number[] },
+  ) => { ok: boolean; reason?: 'no-anchor' | 'line-not-found' | 'invalid-times' }
   /**
    * 删除一行歌词，可撤销。
    *
@@ -1011,6 +1037,57 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       baseVersion: document.version,
     })
     set({ log: next, replay: computeReplay(document, next) })
+  },
+
+  commitWordSegments: (lineId, segments, opts) => {
+    const { document, replay, log } = get()
+    const line = document.lines.find((item) => item.id === lineId)
+    if (line === undefined) return { ok: false, reason: 'line-not-found' }
+    if (segments.length === 0) return { ok: false }
+    // 调用方自带时间时先校验：长度对不上或含非法值都整笔拒绝，不写日志
+    const customTimes = opts?.times
+    if (
+      customTimes !== undefined &&
+      (customTimes.length !== segments.length ||
+        customTimes.some((time) => !Number.isFinite(time) || time < 0))
+    ) {
+      return { ok: false, reason: 'invalid-times' }
+    }
+    const anchor = resolveCutAnchor(
+      getReplayedLineTime(replay, lineId),
+      getReplayedWordTime(replay, lineId, 0),
+      opts?.placementStartMs ?? null,
+    )
+    if (anchor === null) return { ok: false, reason: 'no-anchor' }
+    // 深拷贝：segments 可能来自弹窗内部态，落盘后不能再被外部改动
+    const storedSegments: WordSegment[] = segments.map((segment) => ({
+      start: segment.start,
+      end: segment.end,
+      text: segment.text,
+    }))
+    // 锚点本来就是行级时间时不重写行级；来自首字 / 占位时才补
+    const lineTimeMs = anchor.source === 'line' ? undefined : anchor.anchorMs
+    const next = appendOperation(log, {
+      kind: 'word-segments',
+      scope: {
+        lineIds: [lineId],
+        wordRefs: storedSegments.map((_, wordIndex) => ({ lineId, wordIndex })),
+        timeRange: null,
+      },
+      delta: {
+        mode: 'word-segments',
+        segments: storedSegments,
+        times:
+          customTimes === undefined
+            ? deriveInitialWordTimes(anchor.anchorMs, storedSegments.length)
+            : [...customTimes],
+        ...(lineTimeMs === undefined ? {} : { lineTimeMs }),
+      },
+      description: `切分字块「${effectiveLineText(document, replay, lineId)?.text ?? line.text}」（${storedSegments.length} 块）`,
+      baseVersion: document.version,
+    })
+    set({ log: next, replay: computeReplay(document, next) })
+    return { ok: true }
   },
 
   removeLine: (lineId) => {

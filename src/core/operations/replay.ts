@@ -1,4 +1,4 @@
-import type { LyricDocument, LyricLine, OperationKind, OperationLog, OperationLogEntry } from '../types'
+import type { LyricDocument, LyricLine, OperationKind, OperationLog, OperationLogEntry, WordSegment } from '../types'
 
 /**
  * 字级时间戳在回放状态中的键。
@@ -84,6 +84,14 @@ export interface ReplayState {
    * 不据此抹掉 `wordTimestamps`；导出时用它避免旧标签「复活」。
    */
   clearedLineLines: Set<string>
+  /**
+   * 切分覆盖表（`word-segments` 模式产生），键为行 ID。
+   *
+   * 命中时 `deriveVisibleLines` 用覆盖的块替换该行 `wordTimestamps` 的
+   * `range` / `text`。覆盖表不来自基线：每次回放都从空开始重建，
+   * 撤销后自动消失，因此无需保存旧切分。
+   */
+  wordSegments: Record<string, WordSegment[]>
 }
 
 /**
@@ -131,12 +139,23 @@ export function replayOperations(
   const removedLineIds = new Set<string>()
   const clearedWordLines = new Set<string>()
   const clearedLineLines = new Set<string>()
+  // 切分覆盖表同样不来自基线：只由本次回放里生效中的 word-segments 记录重建
+  const wordSegments: Record<string, WordSegment[]> = {}
   const kindFilter = options.kinds && options.kinds.length > 0 ? new Set(options.kinds) : null
 
   for (const entry of log.entries) {
     if (!options.includeUndone && entry.status !== 'active') continue
     if (kindFilter && !kindFilter.has(entry.kind)) continue
-    applyEntry(entry, lineTimestamps, wordTimestamps, lineTexts, removedLineIds, clearedWordLines, clearedLineLines)
+    applyEntry(
+      entry,
+      lineTimestamps,
+      wordTimestamps,
+      lineTexts,
+      removedLineIds,
+      clearedWordLines,
+      clearedLineLines,
+      wordSegments,
+    )
     appliedEntryIds.push(entry.id)
     if (options.untilEntryId && entry.id === options.untilEntryId) break
   }
@@ -150,6 +169,7 @@ export function replayOperations(
     removedLineIds,
     clearedWordLines,
     clearedLineLines,
+    wordSegments,
   }
 }
 
@@ -178,6 +198,7 @@ function clearLineWords(lineId: string, wordTimestamps: Record<string, number>):
  * @param removedLineIds 被移除的行集合（就地修改）
  * @param clearedWordLines 字级被清空的行集合（就地修改）
  * @param clearedLineLines 行级时间被清空的行集合（就地修改）
+ * @param wordSegments 切分覆盖表（就地修改）
  */
 function applyEntry(
   entry: OperationLogEntry,
@@ -187,6 +208,7 @@ function applyEntry(
   removedLineIds: Set<string>,
   clearedWordLines: Set<string>,
   clearedLineLines: Set<string>,
+  wordSegments: Record<string, WordSegment[]>,
 ): void {
   const { delta, scope } = entry
   switch (delta.mode) {
@@ -270,6 +292,29 @@ function applyEntry(
       }
       break
     }
+    case 'word-segments': {
+      for (const lineId of scope.lineIds) {
+        // 整体替换：先清掉旧字级键，避免块数变少时旧下标残留成幽灵时间
+        clearLineWords(lineId, wordTimestamps)
+        delta.segments.forEach((_, index) => {
+          const timeMs = delta.times[index]
+          if (typeof timeMs === 'number') wordTimestamps[wordKey(lineId, index)] = timeMs
+        })
+        wordSegments[lineId] = delta.segments.map((segment) => ({ ...segment }))
+        // 补行级：仅当锚点来自首字 / 时间轴占位（原本行级为空）时携带
+        if (typeof delta.lineTimeMs === 'number') {
+          const current = lineTimestamps[lineId] ?? []
+          const next = [...current]
+          if (next.length === 0) next.push(delta.lineTimeMs)
+          else next[0] = delta.lineTimeMs
+          lineTimestamps[lineId] = next
+        }
+        // 数据已重新完整：撤掉"被清空"标记，否则 deriveVisibleLines 会把新切分再抹一次
+        clearedWordLines.delete(lineId)
+        clearedLineLines.delete(lineId)
+      }
+      break
+    }
   }
 }
 
@@ -294,6 +339,26 @@ export function deriveVisibleLines(document: LyricDocument, state: ReplayState):
       if (override.translation !== undefined) next.translation = override.translation ?? undefined
       if (override.romanization !== undefined) next.romanization = override.romanization ?? undefined
       if (override.comment !== undefined) next.comment = override.comment ?? undefined
+    }
+    const segments = state.wordSegments[line.id]
+    if (segments !== undefined) {
+      // 切分整体替换：块数、range、text 全部取覆盖值，时间按同下标取自回放表。
+      // 覆盖表只存 range/text（时间仍在 wordTimestamps 里），因此 timeMs 缺省回退到
+      // 行模型旧值；precisionMs / source 沿用同下标旧值，避免伪造来源。
+      next = {
+        ...next,
+        wordTimestamps: segments.map((segment, index) => {
+          const base = next.wordTimestamps[index]
+          return {
+            kind: 'word',
+            timeMs: state.wordTimestamps[wordKey(line.id, index)] ?? base?.timeMs ?? 0,
+            precisionMs: base?.precisionMs ?? 1,
+            source: base?.source ?? 'manual',
+            range: { start: segment.start, end: segment.end },
+            text: segment.text,
+          }
+        }),
+      }
     }
     if (state.clearedWordLines.has(line.id) && next.wordTimestamps.length > 0) {
       next = { ...next, wordTimestamps: [] }

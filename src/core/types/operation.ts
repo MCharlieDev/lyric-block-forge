@@ -25,6 +25,8 @@ export type OperationKind =
   | 'manual-nudge'
   /** 字级时间戳微调（行编辑弹窗里批量改字级），单条不弹窗 */
   | 'word-timestamp'
+  /** 按字符缝隙切分字块（写入新切分与初始字级时间，必要时补行级时间），单条不弹窗 */
+  | 'word-segments'
   /** 频率微调（音频分析给出的精确时间），单条不弹窗、批量须弹窗 */
   | 'frequency-nudge'
   /** 人声边界修正（拖动 / 新增 / 删除 / 合并 / 拆分） */
@@ -140,6 +142,22 @@ export interface LineTextValue {
 }
 
 /**
+ * 一个切分后的字块。
+ *
+ * `start` / `end` 是相对行文本的 **UTF-16 码元偏移**（左闭右开），与
+ * `WordTimestamp.range` 同坐标系；emoji 等代理对占 2 个码元，但块边界
+ * 只落在码点之间（切分粒度按码点，见 `wordTimes.charsFromText`）。
+ */
+export interface WordSegment {
+  /** 起始偏移（含） */
+  start: number
+  /** 结束偏移（不含） */
+  end: number
+  /** 该块对应的原文，等于 `text.slice(start, end)` */
+  text: string
+}
+
+/**
  * 变化量描述 —— 统一用"绝对值"或"偏移量"两种表达。
  *
  * 选择偏移量表达（如整体移动 +120ms）的好处是：回放时不受基线变化影响，
@@ -164,6 +182,28 @@ export type OperationDelta =
    * 目标行由 `entry.scope.lineIds` 给出。
    */
   | { mode: 'clear-timestamps' }
+  /**
+   * 按块切分一行：写入新的字级切分（`segments`）与各块的初始字级时间（`times`），
+   * 必要时一并补写字级锚点来源的行级时间（`lineTimeMs`）。
+   *
+   * 一条记录自包含：撤销后从基线重新回放，旧切分与旧字级时间一并复原；
+   * 对同一行再次切分 = 新记录整体覆盖旧切分（回放顺序天然支持）。
+   * 目标行由 `entry.scope.lineIds` 给出（单行）。
+   */
+  | {
+      mode: 'word-segments'
+      /** 新切分块，UTF-16 偏移，首尾相接、全覆盖、无 gap */
+      segments: WordSegment[]
+      /** 与 `segments` 等长的字级时间（毫秒），按下标对应块 */
+      times: number[]
+      /**
+       * 需要补写的行级时间（毫秒）。
+       *
+       * 仅当锚点来自「首字」或「时间轴占位」（原本行级为空）时出现；
+       * 锚点本来就是行级时间时省略，避免无意义地重写行级。
+       */
+      lineTimeMs?: number
+    }
 
 /**
  * 操作日志记录 —— 编辑器的唯一真相来源。

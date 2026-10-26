@@ -8,6 +8,7 @@ export const OPERATION_KIND_LABEL: Record<OperationKind, string> = {
   'selection-offset': '多选移动',
   'manual-nudge': '手动微调',
   'word-timestamp': '字级微调',
+  'word-segments': '字级切分',
   'frequency-nudge': '频率微调',
   'vocal-boundary-edit': '人声边界修正',
   'text-edit': '文本编辑',
