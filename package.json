@@ -13,7 +13,7 @@
     "test": "vitest run",
     "harness": "node harness/launch.mjs",
     "harness:keep": "node harness/launch.mjs --keep-alive",
-    "deploy": "vite build && gh-pages -d dist"
+    "deploy": "vite build && gh-pages -d dist --nojekyll"
   },
   "dependencies": {
     "react": "^18.3.1",
