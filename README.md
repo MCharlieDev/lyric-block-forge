@@ -1,8 +1,18 @@
 # Lyric Block Forge
 
+[![Vite](https://img.shields.io/badge/Vite-B73BFE?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![React](https://img.shields.io/badge/React-20232A?style=flat-square&logo=react&logoColor=61DAFB)](https://react.dev/)
+[![tests](https://img.shields.io/badge/tests-717%20passed-success?style=flat-square)](#当前状态)
+[![license](https://img.shields.io/badge/license-BSL%201.1-blue?style=flat-square)](LICENSE)
+
 > 一个给歌词创作者用的离线 LRC 编辑器：把歌词当成时间轴上的**块**来拖，而不是表格里的**行**来填。
 
 Lyric Block Forge（工程内名 `lrc-editor`）面向真正要打轴的人：看得见波形、拖得动歌词块、改得了字级切分、退得回任何一步，而且所有数据都留在自己的机器上。
+
+🌐 **在线体验**：<https://mcharliedev.github.io/lyric-block-forge/>
+
+> 构建产物与 `gh-pages` 分支已就绪。首次访问若返回 404，请在仓库 **Settings → Pages → Source** 选择 `gh-pages` 分支。建议使用桌面端 Chrome / Edge，移动端布局仍在开发中。
 
 ---
 
@@ -182,7 +192,10 @@ npm run build      # tsc -b && vite build
 npm run typecheck  # tsc -b --noEmit
 npm test           # vitest run
 npm run harness    # 启动 vite + headless Chrome，跑完整 UI 断言（需要本机安装 Chrome）
+npm run deploy     # 构建并发布到 gh-pages 分支（GitHub Pages）
 ```
+
+GitHub Pages 部署：`npm run deploy` 会把 `dist/` 推到 `gh-pages` 分支；随后在仓库 **Settings → Pages** 把 Source 设为 **Deploy from a branch → `gh-pages` / `root`** 即可。生产构建自动使用子路径 `/lyric-block-forge/`，开发与 harness 仍走站点根路径。
 
 `npm run harness -- AX` 只跑指定断言组；`npm run harness:keep` 保留进程，便于手工连 CDP 调试。端口可用 `LRC_DEV_PORT` / `LRC_CDP_PORT` 覆盖。
 
@@ -210,3 +223,16 @@ npm run harness    # 启动 vite + headless Chrome，跑完整 UI 断言（需�
 ## 名字
 
 **Forge**（锻炉）：时间不是填进去的，是一块一块锻出来的。
+
+---
+
+## License
+
+本项目采用 **Business Source License 1.1（BSL 1.1）**，完整条款见 [LICENSE](LICENSE)。
+
+- **允许**：复制、修改、创作衍生作品、再分发；个人与内部使用（含生产环境）无需付费
+- **限制**：不得将本作品或其衍生作品作为商业托管 / 分发服务提供给第三方
+- **Change Date**：`2030-11-10`；该日起自动转为 **Apache License 2.0**
+- **商业许可**：商业使用请联系 Licensor（MCharlieDev）获取授权
+
+> BSL 1.1 是「源码可见（source-available）」协议，不是 OSI 认证的开源协议。选择它是为了在源码透明与商业保护之间留出明确边界。

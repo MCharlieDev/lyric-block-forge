@@ -7,7 +7,10 @@ import { defineConfig } from 'vite'
  * 四个别名与 tsconfig 的 paths 一一对应，用于强制分层引用清晰：
  * core / adapters / ui / shells。
  */
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  // GitHub Pages 把站点放在仓库子路径下，构建产物必须带这个前缀；
+  // 开发服务器与 harness 仍走站点根路径，否则现有断言全部找不到页面。
+  base: mode === 'production' ? '/lyric-block-forge/' : '/',
   plugins: [react()],
   resolve: {
     alias: {
@@ -25,4 +28,4 @@ export default defineConfig({
     // 盯上后会抛 EBUSY 把 dev server 打崩，直接忽略掉。
     watch: { ignored: ['**/.tmp-shot/**', '**/harness/.tmp/**'] },
   },
-})
+}))
