@@ -1,0 +1,22 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+.vite
+*.log
+.idea
+.vscode/*
+!.vscode/extensions.json
+*.tsbuildinfo
+.env
+Thumbs.db
+exercise/
+# 待交付中转区（临时，不入库）
+pending_delivery/
+# harness 运行时产物（Chrome profile / 日志 / 临时）
+harness/.tmp/
+# endtail 探针生成的静音 wav（运行时产物，脚本相对路径落此处）
+harness/silence-60s.wav
+.trae/
+.context/
