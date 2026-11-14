@@ -20,7 +20,7 @@ import { buildExportText, selectVisibleLines, useEditorStore } from './stores/ed
 import { SETTINGS_STORAGE_KEY, toBilingualOptions, toMetadataPrefixOptions, useSettingsStore } from './stores/settingsStore'
 
 /** LRC 文件的导入 / 导出过滤器。 */
-const LRC_FILTER = { name: 'LRC 歌词', extensions: ['lrc', 'txt'] }
+const LRC_FILTER = { name: 'LRC 歌词', extensions: ['lrc', 'txt', 'docx'] }
 /** 常见的伴奏文件扩展名。 */
 const AUDIO_FILTER = { name: '音频文件', extensions: ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg'] }
 
@@ -115,10 +115,11 @@ export function App() {
    *
    * @param text 源文本
    * @param sourceName 来源名称，写进日志描述
-   * @param encoding 源编码；剪贴板与手动输入是纯字符串，无编码概念
+   * @param encoding 源编码；剪贴板与手动输入是纯字符串，无编码概念；
+   *   二进制容器（如 `.docx`）为 `null`，原样透传给解析器
    * @returns 是否导入成功
    */
-  const applyTextImport = (text: string, sourceName: string, encoding?: string): boolean => {
+  const applyTextImport = (text: string, sourceName: string, encoding?: string | null): boolean => {
     const result = parseLrc(text, {
       encoding,
       bilingual: toBilingualOptions(settings),
@@ -275,7 +276,7 @@ export function App() {
                       void handleImportLrc()
                     }}
                   >
-                    导入 LRC 文件
+                    导入 LRC / 文本 / Word
                   </button>
                   <button
                     type="button"

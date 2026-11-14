@@ -585,3 +585,17 @@ describe('元数据前缀识别', () => {
     })
   })
 })
+
+describe('双语无时间戳（Word 导入行为）', () => {
+  // Word 导入得到的是纯文本：所有行都没有行级时间戳。
+  // bilingual.ts 的 isMergeablePair 要求「双方恰好一个行级时间戳」，
+  // 因此这类中英交替必须保持独立成行，不能被误合并。
+  test('无时间戳的中英交替两行，不会被双语合并', () => {
+    const src = '这是第一句\nThis is the first line\n'
+    const doc = parseOk(src)
+    expect(doc.lines).toHaveLength(2)
+    expect(doc.lines[0].translation).toBeUndefined()
+    expect(doc.lines[1].translation).toBeUndefined()
+    expect(serializeLrc(doc)).toBe(src)
+  })
+})

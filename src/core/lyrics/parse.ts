@@ -16,8 +16,11 @@ export interface ParseOptions {
   /**
    * 源文本编码。缺省时先按 `utf-8` 尝试，失败再走用户预设的备选编码。
    * 编码检测失败属于"必须事后确认"的少数异常之一。
+   *
+   * `null` 表示源文件是二进制容器（如 `.docx`）：纯文本已由适配层解析产出，
+   * 不存在"文本编码"，不能拿 `utf-8` 冒充。缺省（`undefined`）仍按 `utf-8` 处理。
    */
-  encoding?: string
+  encoding?: string | null
   /** 识别器总闸门：为 `false` 时跳过全部识别（双语合并与元数据前缀识别），默认 `true` */
   applyRecognizers?: boolean
   /** 双语识别与合并预设（分隔符、主语言、容差、开关） */
@@ -586,7 +589,9 @@ export function parseLrc(source: string, options: ParseOptions = {}): ParseResul
     meta: Object.keys(custom).length > 0 ? { ...meta, custom } : meta,
     lines: merged.lines,
     format: {
-      encoding: options.encoding ?? 'utf-8',
+      // `null` 必须原样保留：它表示二进制容器（如 .docx），不是"未知编码"。
+      // 只有缺省（undefined）才回落 utf-8。
+      encoding: options.encoding === undefined ? 'utf-8' : options.encoding,
       detectedFormat,
       lineEnding,
       hasBOM,

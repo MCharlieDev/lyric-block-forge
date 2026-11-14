@@ -45,8 +45,13 @@ export interface TextFileContent {
   ref: FileRef
   /** 文本内容（已完成编码解码） */
   text: string
-  /** 实际使用的编码，供导入预设回写 */
-  encoding: string
+  /**
+   * 实际使用的编码，供导入预设回写。
+   *
+   * 二进制容器（如 `.docx`）没有"文本编码"概念，其纯文本由适配层内部的解析器
+   * 直接产出，此时为 `null`；不要用 `utf-8` 冒充，否则导入预设会回写错误编码。
+   */
+  encoding: string | null
 }
 
 /** 读取到的音频文件内容。 */

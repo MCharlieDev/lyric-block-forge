@@ -66,6 +66,26 @@ function decodeBuffer(buffer: ArrayBuffer): { text: string; encoding: string } {
   }
 }
 
+/** `.docx` 判定：扩展名大小写不敏感（`.DOCX` 同样走 Word 解析）。 */
+function isDocxFile(file: File): boolean {
+  return file.name.toLowerCase().endsWith('.docx')
+}
+
+/**
+ * 把 `.docx` 解析为纯文本。
+ *
+ * 解析器走动态 `import`：只有真正选到 Word 文件时才加载，不给首屏增加体积。
+ * 二进制容器没有"文本编码"概念，调用方据此把 `encoding` 记为 `null`。
+ *
+ * @param file 选中的 Word 文件
+ * @returns 文档纯文本
+ */
+async function readDocxText(file: File): Promise<string> {
+  const mammoth = await import('mammoth')
+  const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() })
+  return result.value
+}
+
 /** File System Access API 的最小可用结构（避免依赖具体 TS lib 版本）。 */
 interface WritableLike {
   write(data: Blob): Promise<void>
@@ -135,7 +155,9 @@ export function createWebFilePort(): FilePort {
     if (file === undefined) {
       throw new Error(`无法读取文件：引用 ${ref.uri} 不在本次会话的注册表中`)
     }
-    const decoded = decodeBuffer(await file.arrayBuffer())
+    const decoded = isDocxFile(file)
+      ? { text: await readDocxText(file), encoding: null }
+      : decodeBuffer(await file.arrayBuffer())
     return { ref, text: decoded.text, encoding: decoded.encoding }
   }
 
@@ -151,7 +173,9 @@ export function createWebFilePort(): FilePort {
         sizeBytes: file.size,
         mimeType: file.type === '' ? null : file.type,
       }
-      const decoded = decodeBuffer(await file.arrayBuffer())
+      const decoded = isDocxFile(file)
+        ? { text: await readDocxText(file), encoding: null }
+        : decodeBuffer(await file.arrayBuffer())
       return { ref, text: decoded.text, encoding: decoded.encoding }
     },
 

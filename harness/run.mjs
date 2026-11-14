@@ -4492,6 +4492,41 @@ async function testBL(cdp, checks) {
   )
 }
 
+/**
+ * BM：Word 导入接线冒烟。
+ *
+ * 只断 UI 层契约：真实点击「导入」菜单项后，`pickFile` 挂到 body 上的隐藏
+ * `<input type="file">` 的 `accept` 必须含 `.docx`。真的上传 `.docx` 需要
+ * 手搓 zip fixture，成本高且解析细节（表格 / 文本框）靠人工目测，故不做。
+ */
+async function testBM(cdp, checks) {
+  const opened = await ev(cdp, `__lrc.clickButtonText('导入 LRC')`)
+  await sleep(60)
+  const clicked = await ev(cdp, `__lrc.clickButtonText('导入 LRC / 文本 / Word')`)
+  await sleep(80)
+
+  const accept = await ev(
+    cdp,
+    `(function(){var list=document.querySelectorAll('input[type=file]');var el=list[list.length-1];return el?el.accept:null})()`,
+  )
+  assert(checks, 'BM.a 菜单项可点击并触发文件选择', opened === true && clicked === true, J({ opened, clicked }))
+  assert(
+    checks,
+    'BM.b accept 含 .docx / .lrc / .txt',
+    typeof accept === 'string' &&
+      accept.indexOf('.docx') >= 0 &&
+      accept.indexOf('.lrc') >= 0 &&
+      accept.indexOf('.txt') >= 0,
+    J(accept),
+  )
+
+  // 清理：移除本次点击创建的隐藏 input（其 pickFile 仍在等待 change 事件，页面重载即弃）
+  await ev(
+    cdp,
+    `(function(){var list=document.querySelectorAll('input[type=file]');if(list.length){list[list.length-1].remove()}return list.length})()`,
+  )
+}
+
 const TESTS = [
   ['A', '多选拖动 → 一条 selection-offset 整组等量位移', testA],
   ['B', '拖动中零 store 写入', testB],
@@ -4558,6 +4593,7 @@ const TESTS = [
   ['BJ', '时间三位毫秒：行级标签 / 放大态 chip / 缩小态字卡条溢出可横向滚动', testBJ],
   ['BK', '点行落游标 / 左右键字级微调 / 字卡条死区跟随滚动', testBK],
   ['BL', '行首拖动接吸附：吸本行首字不推平 / 关吸附越过首字推平', testBL],
+  ['BM', 'Word 导入接线：菜单项可点、隐藏 input 的 accept 含 .docx', testBM],
 ]
 
 async function main() {

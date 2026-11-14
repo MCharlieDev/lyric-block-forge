@@ -36,8 +36,13 @@ export type LyricFileFormat = 'lrc' | 'enhanced-lrc' | 'plain' | 'unknown'
  * 格式信息。解析/序列化要求尽量无损，因此需要把原始格式细节一并记录。
  */
 export interface LyricFormatInfo {
-  /** 检测（或用户指定）的编码，默认 `utf-8` */
-  encoding: string
+  /**
+   * 检测（或用户指定）的编码，默认 `utf-8`。
+   *
+   * `null` 表示源文件是二进制容器（如 `.docx`），纯文本由解析器产出，
+   * 不存在"文本编码"；导出层不得把 `null` 当成未知编码回退成 utf-8。
+   */
+  encoding: string | null
   /** 检测到的格式种类 */
   detectedFormat: LyricFileFormat
   /** 原始换行符，导出时写回 */
