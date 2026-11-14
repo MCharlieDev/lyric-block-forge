@@ -9,6 +9,7 @@ import {
 } from '@core'
 import { useAdapters } from './context/AdapterContext'
 import { useAudioPlayback } from './hooks/useAudioPlayback'
+import { useDialogFocusTrap } from './hooks/useDialogFocusTrap'
 import { useEditorHotkeys } from './hooks/useEditorHotkeys'
 import { OPERATION_KIND_LABEL } from './labels'
 import { ThreeColumnLayout } from './layout/ThreeColumnLayout'
@@ -46,6 +47,7 @@ export function App() {
   const adapters = useAdapters()
   useAudioPlayback()
   useEditorHotkeys()
+  useDialogFocusTrap()
   const doc = useEditorStore((state) => state.document)
   const replay = useEditorStore((state) => state.replay)
   // 顶栏行数与导出都必须以"可见行"为准：被删除的行不该出现在计数与导出文件里

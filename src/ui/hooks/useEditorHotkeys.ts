@@ -7,7 +7,7 @@ import {
   moveSelectionRange,
   nudgeSelection,
   removeSelectedLines,
-  stampActiveLine,
+  stampAtCursor,
   toggleCursorSelection,
   togglePlayback,
 } from '../utils/editorCommands'
@@ -146,7 +146,7 @@ export function useEditorHotkeys(): void {
       switch (event.code) {
         case DEFAULT_HOTKEYS.stamp:
           event.preventDefault()
-          stampActiveLine(adapters)
+          stampAtCursor(adapters)
           return
         case DEFAULT_HOTKEYS.togglePlay:
           event.preventDefault()

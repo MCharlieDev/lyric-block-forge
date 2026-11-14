@@ -267,6 +267,79 @@ const BOOTSTRAP = `
       clearSel: function () { store.getState().clearLineSelection(); },
       blur: function () { var a = document.activeElement; if (a && a.blur) a.blur(); return document.activeElement ? document.activeElement.tagName : 'none'; },
       activeTag: function () { return document.activeElement ? document.activeElement.tagName : 'none'; },
+      // BH：Tab 焦点循环探针（选择器与 useDialogFocusTrap 保持一致）
+      _sigOf: function (el) {
+        if (!el) return 'none';
+        var mark = '';
+        var keys = ['data-confirm-ok', 'data-confirm-cancel', 'data-confirm-dont-ask', 'data-primary-text', 'data-line-time-input', 'data-word-input'];
+        for (var i = 0; i < keys.length; i++) {
+          if (el.hasAttribute && el.hasAttribute(keys[i])) { mark = keys[i]; break; }
+        }
+        return el.tagName.toLowerCase() + '|' + (el.getAttribute('aria-label') || '') + '|' + mark +
+          '|' + (el.textContent || '').trim().slice(0, 20);
+      },
+      _topDialog: function () {
+        var list = document.querySelectorAll('[role="dialog"]');
+        var dlg = null;
+        for (var i = 0; i < list.length; i++) { if (list[i].getClientRects().length > 0) dlg = list[i]; }
+        return dlg;
+      },
+      _dialogFocusables: function (dlg) {
+        if (!dlg) return [];
+        var sel = 'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), ' +
+          'select:not([disabled]), a[href], [contenteditable]:not([contenteditable="false"]), ' +
+          '[tabindex]:not([tabindex="-1"])';
+        var all = dlg.querySelectorAll(sel);
+        var out = [];
+        for (var i = 0; i < all.length; i++) { if (all[i].getClientRects().length > 0) out.push(all[i]); }
+        return out;
+      },
+      topDialogFocusableCount: function () { return api._dialogFocusables(api._topDialog()).length; },
+      activeInfo: function () {
+        var el = document.activeElement;
+        var dlg = el && el.closest ? el.closest('[role="dialog"]') : null;
+        var confirm = el && el.closest ? el.closest('[data-confirm-dialog]') : null;
+        return {
+          sig: api._sigOf(el),
+          tag: el ? el.tagName.toLowerCase() : 'none',
+          inside: !!dlg,
+          dialogLabel: dlg ? (dlg.getAttribute('aria-label') || dlg.getAttribute('aria-labelledby') || '') : '',
+          inConfirm: !!confirm,
+        };
+      },
+      activeSignature: function () { return api._sigOf(document.activeElement); },
+      dialogEdgeSignatures: function () {
+        var list = api._dialogFocusables(api._topDialog());
+        if (list.length === 0) return { first: null, last: null, count: 0 };
+        return {
+          first: api._sigOf(list[0]),
+          last: api._sigOf(list[list.length - 1]),
+          count: list.length,
+        };
+      },
+      focusDialogEdge: function (edge) {
+        var list = api._dialogFocusables(api._topDialog());
+        if (list.length === 0) return null;
+        var el = edge === 'last' ? list[list.length - 1] : list[0];
+        el.focus();
+        return api._sigOf(el);
+      },
+      clickButtonText: function (label) {
+        var btns = document.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+          if ((btns[i].textContent || '').trim() === label) { btns[i].click(); return true; }
+        }
+        return false;
+      },
+      clickTopDialogButton: function (label) {
+        var dlg = api._topDialog();
+        if (!dlg) return false;
+        var btns = dlg.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+          if ((btns[i].textContent || '').trim() === label) { btns[i].click(); return true; }
+        }
+        return false;
+      },
       // R 条：真实 ⋮ 弹窗路径 —— 点击第 index 个面板「行操作」按钮打开 LineActionSheet
       openSheet: function (index) {
         var btns = document.querySelectorAll('button[aria-label="行操作"]');
@@ -365,6 +438,23 @@ const BOOTSTRAP = `
           var v = st.replay.wordTimestamps[id + '#' + i];
           return v === undefined ? null : v;
         });
+      },
+      // BI：字级游标（文本流游标）读数
+      wordCursor: function () { return store.getState().wordCursor; },
+      // BI：按「字下标」找渲染出来的字卡（chip 可能合并多个字，命中任一即返回）
+      chipRect: function (lineId, wordIndex) {
+        var b = api.block(lineId);
+        if (!b) return null;
+        var chips = b.querySelectorAll('[data-word-chip]');
+        for (var i = 0; i < chips.length; i++) {
+          var raw = chips[i].getAttribute('data-chip-indices') || '';
+          var idx = raw === '' ? [] : raw.split(',').map(Number);
+          if (idx.indexOf(wordIndex) >= 0) {
+            var r = chips[i].getBoundingClientRect();
+            return { x: r.left + r.width / 2, y: r.top + r.height / 2, left: r.left, width: r.width };
+          }
+        }
+        return null;
       },
       // 字级清空场景：store 无「单字清空」入口（setWordTimestamps 过滤非有限值），
       // 只能按回放层语义注入 absolute（timeMs=null → 删键），并自行重建 replay。
@@ -783,15 +873,20 @@ function mouse(cdp, type, x, y, o = {}) {
   })
 }
 
-async function keyPress(cdp, code, key, vk) {
+async function keyPress(cdp, code, key, vk, modifiers = 0) {
   await cdp.send('Input.dispatchKeyEvent', {
-    type: 'rawKeyDown', code, key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk,
+    type: 'rawKeyDown', code, key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers,
   })
   await sleep(10)
   await cdp.send('Input.dispatchKeyEvent', {
-    type: 'keyUp', code, key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk,
+    type: 'keyUp', code, key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers,
   })
   await sleep(30)
+}
+
+/** Tab / Shift+Tab（Shift = 8）。原生焦点遍历由 CDP rawKeyDown 触发。 */
+async function pressTab(cdp, shift = false) {
+  await keyPress(cdp, 'Tab', 'Tab', 9, shift ? 8 : 0)
 }
 
 async function waitReady(cdp) {
@@ -3255,6 +3350,8 @@ async function testBD(cdp, checks) {
 async function testBE(cdp, checks) {
   const ids = await ev(cdp, '__lrc.ids()')
   const id = ids[0]
+  // 本组只验纯推土机口径：关吸附，保证位移与期望值逐毫秒对应（吸附行为由 BL 组覆盖）
+  await ev(cdp, '__lrc.updateSettings({ snapEnabled: false })')
   // 放大态（ppms ≥ WORD_CARD_PIXELS_PER_MS=0.3）才有 word 卡片与行首热区
   await ev(cdp, '__lrc.setView(11500, 2200)')
   await sleep(180)
@@ -3423,6 +3520,9 @@ async function testBE(cdp, checks) {
     Math.abs(rectAfterClick.left - rectAfter.left) <= 1,
     `Δleft=${(rectAfterClick.left - rectAfter.left).toFixed(2)}`,
   )
+
+  // 恢复吸附（设置跨组持久化，不能留给后续组）
+  await ev(cdp, '__lrc.updateSettings({ snapEnabled: true })')
 }
 
 /* -------- BF：保存前确认（清行级 / 改正文 / 双后果聚合成一个框 / 无字级不弹） -------- */
@@ -3661,6 +3761,737 @@ async function testBG(cdp, checks) {
   assert(checks, 'BG.c 复位后 confirmClearLineTime = true', afterC === true, J(afterC))
 }
 
+/* ---------------- BH：全局 Tab 焦点循环（useDialogFocusTrap） ---------------- */
+async function testBH(cdp, checks) {
+  const ids = await ev(cdp, '__lrc.ids()')
+  const [l0] = ids
+  // 前置：确保「清空行级时间」为弹窗形态（组间不重置 settings）
+  await ev(cdp, '__lrc.updateSettings({ confirmClearLineTime: true })')
+
+  // a. 行编辑弹窗：连按 Tab（可聚焦数 + 2）始终留在同一 dialog
+  await clickBlock(cdp, l0)
+  await openLineSheet(cdp, 0)
+  const countA = await ev(cdp, '__lrc.topDialogFocusableCount()')
+  assert(checks, 'BH.a 行操作弹窗可聚焦元素 > 0', typeof countA === 'number' && countA > 0, J(countA))
+  let escapeA = ''
+  for (let i = 0; i < countA + 2; i++) {
+    await pressTab(cdp, false)
+    const info = await ev(cdp, '__lrc.activeInfo()')
+    if (!info.inside || info.dialogLabel !== '行操作') {
+      escapeA = `step ${i + 1}: ${J(info)}`
+      break
+    }
+  }
+  assert(checks, 'BH.a 连按 Tab 焦点始终在行操作弹窗内', escapeA === '', escapeA || `${countA + 2} 步`)
+
+  // b. 首尾回环：末 → Tab → 首；首 → Shift+Tab → 末
+  const edgesB = await ev(cdp, '__lrc.dialogEdgeSignatures()')
+  await ev(cdp, `__lrc.focusDialogEdge('last')`)
+  await pressTab(cdp, false)
+  const wrapB = await ev(cdp, '__lrc.activeSignature()')
+  assert(checks, 'BH.b 末元素 Tab 回到首元素', wrapB === edgesB.first, J({ wrapB, first: edgesB.first }))
+  await ev(cdp, `__lrc.focusDialogEdge('first')`)
+  await pressTab(cdp, true)
+  const backB = await ev(cdp, '__lrc.activeSignature()')
+  assert(checks, 'BH.b 首元素 Shift+Tab 回到末元素', backB === edgesB.last, J({ backB, last: edgesB.last }))
+  await ev(cdp, '__lrc.closeDialog()')
+  await sleep(60)
+
+  // c. TextImportDialog：textarea 参与回环（本轮缺陷锁）
+  const openedC = await ev(cdp, `__lrc.clickButtonText('导入 LRC')`)
+  await sleep(80)
+  const menuC = await ev(cdp, `__lrc.clickButtonText('手动输入')`)
+  await sleep(80)
+  const openC = await ev(cdp, `!!document.querySelector('[role="dialog"][aria-label="手动输入歌词"]')`)
+  assert(
+    checks,
+    'BH.c 手动输入弹窗已打开',
+    openedC === true && menuC === true && openC === true,
+    J({ openedC, menuC, openC }),
+  )
+  const beforeC = await ev(cdp, '__lrc.activeInfo()')
+  assert(checks, 'BH.c 打开时焦点在 textarea', beforeC.tag === 'textarea', J(beforeC))
+  await pressTab(cdp, true)
+  const afterC = await ev(cdp, '__lrc.activeInfo()')
+  assert(
+    checks,
+    'BH.c textarea 上 Shift+Tab 不逃出弹窗',
+    afterC.inside === true && afterC.dialogLabel === '手动输入歌词',
+    J(afterC),
+  )
+  const edgesC = await ev(cdp, '__lrc.dialogEdgeSignatures()')
+  await ev(cdp, `__lrc.focusDialogEdge('last')`)
+  await pressTab(cdp, false)
+  const wrapC = await ev(cdp, '__lrc.activeSignature()')
+  assert(
+    checks,
+    'BH.c 末元素 Tab 回到 textarea（textarea 参与回环）',
+    wrapC === edgesC.first && typeof edgesC.first === 'string' && edgesC.first.indexOf('textarea') === 0,
+    J({ wrapC, first: edgesC.first }),
+  )
+  await ev(cdp, `__lrc.clickTopDialogButton('取消')`)
+  await sleep(60)
+  assert(checks, 'BH.c 取消后手动输入弹窗关闭', (await ev(cdp, `!document.querySelector('[role="dialog"][aria-label="手动输入歌词"]')`)) === true, 'closed')
+
+  // d. 双开「行编辑 + 切分字块」：Tab 只在切分弹窗内
+  await clickBlock(cdp, l0)
+  await openLineSheet(cdp, 0)
+  assert(checks, 'BH.d 切分入口可点', (await ev(cdp, '__lrc.clickCutEntry()')) === true, 'cut')
+  await sleep(80)
+  const countD = await ev(cdp, '__lrc.topDialogFocusableCount()')
+  let escapeD = ''
+  for (let i = 0; i < countD + 2; i++) {
+    await pressTab(cdp, false)
+    const info = await ev(cdp, '__lrc.activeInfo()')
+    if (!info.inside || info.dialogLabel !== '切分字块') {
+      escapeD = `step ${i + 1}: ${J(info)}`
+      break
+    }
+  }
+  assert(
+    checks,
+    'BH.d 双开时 Tab 只在切分弹窗内循环',
+    countD > 0 && escapeD === '',
+    escapeD || `${countD} 个可聚焦元素`,
+  )
+  await ev(cdp, `__lrc.clickTopDialogButton('取消')`)
+  await sleep(60)
+  await ev(cdp, '__lrc.closeDialog()')
+  await sleep(60)
+
+  // e. 双开「行编辑 + 保存前确认」：Tab 只在确认框内
+  await clickBlock(cdp, l0)
+  await openLineSheet(cdp, 0)
+  await ev(cdp, `__lrc.setLineTimeInput('')`)
+  await sleep(30)
+  await ev(cdp, '__lrc.clickDialogSave()')
+  await sleep(80)
+  assert(checks, 'BH.e 保存前确认框已开', (await ev(cdp, '__lrc.confirmOpen()')) === true, 'confirm')
+  const countE = await ev(cdp, '__lrc.topDialogFocusableCount()')
+  let escapeE = ''
+  for (let i = 0; i < countE + 2; i++) {
+    await pressTab(cdp, false)
+    const info = await ev(cdp, '__lrc.activeInfo()')
+    if (!info.inConfirm) {
+      escapeE = `step ${i + 1}: ${J(info)}`
+      break
+    }
+  }
+  assert(
+    checks,
+    'BH.e 双开时 Tab 只在确认框内循环',
+    countE > 0 && escapeE === '',
+    escapeE || `${countE} 个可聚焦元素`,
+  )
+  await ev(cdp, '__lrc.clickConfirmCancel()')
+  await sleep(60)
+  await ev(cdp, '__lrc.closeDialog()')
+  await ev(cdp, '__lrc.updateSettings({ confirmClearLineTime: true })')
+}
+
+/**
+ * BI：字级空格打轴（文本流游标）。
+ *
+ * 底层只有一套游标逻辑，与缩放 / 卡片形态无关；本组同时覆盖
+ * 「未打轴行首字联动行级」「末字换行」「上下键按字跳」「缩小态高亮与按键」。
+ */
+async function testBI(cdp, checks) {
+  const ids = await ev(cdp, '__lrc.ids()')
+  const [l0, l1] = ids
+
+  // ---------- BI.a：清空行级时间后按空格 → 行级 + word0 同一条日志 ----------
+  await ev(cdp, `__lrc.store.getState().clearLineTime(${J(l0)})`)
+  await ev(cdp, `__lrc.store.getState().selectLine(${J(l0)})`)
+  await ev(cdp, '__lrc.store.getState().setPlayhead(13000)')
+  const cursor0 = await ev(cdp, '__lrc.wordCursor()')
+  assert(checks, 'BI.a 初始无字级游标', cursor0 === null, JSON.stringify(cursor0))
+
+  const logBefore = await ev(cdp, '__lrc.logLen()')
+  await keyPress(cdp, 'Space', ' ', 32)
+  const logAfter = await ev(cdp, '__lrc.logLen()')
+  const wordsA = await ev(cdp, `__lrc.wordTimes(${J(l0)})`)
+  const timesA = await ev(cdp, `__lrc.times(${J(l0)})`)
+  const lastA = await ev(cdp, '__lrc.last()')
+  const cursorA = await ev(cdp, '__lrc.wordCursor()')
+  const valuesA = lastA && lastA.delta ? lastA.delta.values : []
+  assert(checks, 'BI.a 空格写 word0 时间', wordsA !== null && wordsA[0] === 13000, JSON.stringify(wordsA))
+  assert(
+    checks,
+    'BI.a 未打轴行同时写入行级时间',
+    timesA.length === 1 && timesA[0] === 13000,
+    JSON.stringify(timesA),
+  )
+  assert(
+    checks,
+    'BI.a 一条 word-timestamp 含行级+字级两项',
+    lastA !== null &&
+      lastA.kind === 'word-timestamp' &&
+      valuesA.length === 2 &&
+      valuesA.some((v) => v.wordIndex === 0 && v.timeMs === 13000) &&
+      valuesA.some((v) => v.wordIndex === null && v.timeMs === 13000),
+    JSON.stringify({ kind: lastA && lastA.kind, values: valuesA }),
+  )
+  assert(
+    checks,
+    'BI.a 游标顺延到 1',
+    cursorA !== null && cursorA.lineId === l0 && cursorA.wordIndex === 1,
+    JSON.stringify(cursorA),
+  )
+  assert(checks, 'BI.a 只追加一条日志', logAfter === logBefore + 1, `${logBefore} → ${logAfter}`)
+
+  // ---------- BI.a2：一步撤销把行级 + 首字一起回退（硬边界） ----------
+  await ev(cdp, '__lrc.store.getState().undoLastAction()')
+  const wordsUndo = await ev(cdp, `__lrc.wordTimes(${J(l0)})`)
+  const timesUndo = await ev(cdp, `__lrc.times(${J(l0)})`)
+  assert(
+    checks,
+    'BI.a 一步撤销回退行级 + 首字',
+    wordsUndo !== null &&
+      wordsUndo.length === 2 &&
+      wordsUndo[0] === null &&
+      wordsUndo[1] === null &&
+      timesUndo.length === 0,
+    JSON.stringify({ wordsUndo, timesUndo }),
+  )
+  // 复原到「行级已写、游标在 1」的状态，供 BI.b 续打
+  await ev(cdp, `__lrc.store.getState().setWordCursor(${J(l0)}, 0)`)
+  await keyPress(cdp, 'Space', ' ', 32)
+
+  // ---------- BI.b：再按空格 → word1；末字后游标清空并换行 ----------
+  await ev(cdp, '__lrc.store.getState().setPlayhead(14000)')
+  await keyPress(cdp, 'Space', ' ', 32)
+  const wordsB = await ev(cdp, `__lrc.wordTimes(${J(l0)})`)
+  const lastB = await ev(cdp, '__lrc.last()')
+  const cursorB = await ev(cdp, '__lrc.wordCursor()')
+  const selB = await ev(cdp, '__lrc.sel()')
+  const valuesB = lastB && lastB.delta ? lastB.delta.values : []
+  assert(checks, 'BI.b 再按空格写 word1', wordsB !== null && wordsB[1] === 14000, JSON.stringify(wordsB))
+  assert(
+    checks,
+    'BI.b 末字只写字级一项（行级已存在）',
+    lastB !== null && lastB.kind === 'word-timestamp' && valuesB.length === 1 && valuesB[0].wordIndex === 1,
+    JSON.stringify({ kind: lastB && lastB.kind, values: valuesB }),
+  )
+  assert(
+    checks,
+    'BI.b 末字后游标清空、选中推进到下一可见行',
+    cursorB === null && selB.activeLineId === l1,
+    JSON.stringify({ cursorB, active: selB.activeLineId, l1 }),
+  )
+
+  // ---------- BI.c：上下键按字跳（含跨行回环） ----------
+  await ev(cdp, `__lrc.store.getState().selectLine(${J(l0)})`)
+  await ev(cdp, `__lrc.store.getState().setWordCursor(${J(l0)}, 0)`)
+  await keyPress(cdp, 'ArrowDown', 'ArrowDown', 40)
+  const c1 = await ev(cdp, '__lrc.wordCursor()')
+  const s1 = await ev(cdp, '__lrc.sel()')
+  const stripCursor = await ev(
+    cdp,
+    `(function(){var b=__lrc.block(${J(l0)});return b?b.querySelectorAll('[data-word-strip][data-word-cursor]').length:-1})()`,
+  )
+  assert(
+    checks,
+    'BI.c 向下键在本行字间推进',
+    c1 !== null && c1.lineId === l0 && c1.wordIndex === 1 && s1.activeLineId === l0,
+    JSON.stringify({ c1, active: s1.activeLineId }),
+  )
+  assert(checks, 'BI.c 游标字在行模式（缩小态）渲染蓝光', stripCursor === 1, String(stripCursor))
+
+  await keyPress(cdp, 'ArrowDown', 'ArrowDown', 40)
+  const c2 = await ev(cdp, '__lrc.wordCursor()')
+  const s2 = await ev(cdp, '__lrc.sel()')
+  assert(
+    checks,
+    'BI.c 末字向下 → 换到下一行且游标清空（下一行无字级）',
+    c2 === null && s2.activeLineId === l1,
+    JSON.stringify({ c2, active: s2.activeLineId }),
+  )
+
+  await keyPress(cdp, 'ArrowUp', 'ArrowUp', 38)
+  const c3 = await ev(cdp, '__lrc.wordCursor()')
+  const s3 = await ev(cdp, '__lrc.sel()')
+  assert(
+    checks,
+    'BI.c 向上跨行 → 落到上一行末字',
+    c3 !== null && c3.lineId === l0 && c3.wordIndex === 1 && s3.activeLineId === l0,
+    JSON.stringify({ c3, active: s3.activeLineId }),
+  )
+
+  await keyPress(cdp, 'ArrowUp', 'ArrowUp', 38)
+  const c4 = await ev(cdp, '__lrc.wordCursor()')
+  assert(
+    checks,
+    'BI.c 继续向上 → 本行首字',
+    c4 !== null && c4.lineId === l0 && c4.wordIndex === 0,
+    JSON.stringify(c4),
+  )
+
+  await keyPress(cdp, 'ArrowUp', 'ArrowUp', 38)
+  const c5 = await ev(cdp, '__lrc.wordCursor()')
+  assert(
+    checks,
+    'BI.c 首行首字向上 → 原地不动',
+    c5 !== null && c5.lineId === l0 && c5.wordIndex === 0,
+    JSON.stringify(c5),
+  )
+
+  // ---------- BI.d：放大态点字卡设游标；缩小态同一游标仍生效 ----------
+  // 视口要完整含住两字（13000 / 14000），否则第二个字卡被裁到轨道外、点不中
+  await setView(cdp, 12800, 2600)
+  const chip = await ev(cdp, `__lrc.chipRect(${J(l0)}, 1)`)
+  assert(checks, 'BI.d 放大态命中第二个字卡', chip !== null, JSON.stringify(chip))
+  if (chip !== null) {
+    const cx = Math.round(chip.x)
+    const cy = Math.round(chip.y)
+    await mouse(cdp, 'mousePressed', cx, cy, { buttons: 1 })
+    await sleep(15)
+    await mouse(cdp, 'mouseReleased', cx, cy, { buttons: 0 })
+    await sleep(40)
+  }
+  const c6 = await ev(cdp, '__lrc.wordCursor()')
+  const chipCursor = await ev(
+    cdp,
+    `(function(){var b=__lrc.block(${J(l0)});return b?b.querySelectorAll('[data-word-chip][data-word-cursor]').length:-1})()`,
+  )
+  assert(
+    checks,
+    'BI.d 点击字卡 → 游标落在该字且字卡蓝光',
+    c6 !== null && c6.lineId === l0 && c6.wordIndex === 1 && chipCursor === 1,
+    JSON.stringify({ c6, chipCursor }),
+  )
+
+  await setView(cdp, 0, 60000)
+  const stripSmall = await ev(
+    cdp,
+    `(function(){var b=__lrc.block(${J(l0)});return b?b.querySelectorAll('[data-word-strip][data-word-cursor]').length:-1})()`,
+  )
+  assert(checks, 'BI.d 缩小态同一游标仍高亮对应字', stripSmall === 1, String(stripSmall))
+
+  await keyPress(cdp, 'ArrowUp', 'ArrowUp', 38)
+  const c7 = await ev(cdp, '__lrc.wordCursor()')
+  assert(
+    checks,
+    'BI.d 缩小态上下键仍按字跳',
+    c7 !== null && c7.lineId === l0 && c7.wordIndex === 0,
+    JSON.stringify(c7),
+  )
+
+  await ev(cdp, '__lrc.store.getState().setPlayhead(15000)')
+  await keyPress(cdp, 'Space', ' ', 32)
+  const wordsSmall = await ev(cdp, `__lrc.wordTimes(${J(l0)})`)
+  const lastSmall = await ev(cdp, '__lrc.last()')
+  assert(
+    checks,
+    'BI.d 缩小态空格按游标写字',
+    wordsSmall !== null && wordsSmall[0] === 15000 && lastSmall !== null && lastSmall.kind === 'word-timestamp',
+    JSON.stringify({ wordsSmall, kind: lastSmall && lastSmall.kind }),
+  )
+
+  // ---------- BI.e：未切分行走行级，切分行走字级 ----------
+  await ev(cdp, `__lrc.store.getState().selectLine(${J(l1)})`)
+  await ev(cdp, '__lrc.store.getState().setWordCursor(null)')
+  await ev(cdp, '__lrc.store.getState().setPlayhead(17000)')
+  await keyPress(cdp, 'Space', ' ', 32)
+  const timesE = await ev(cdp, `__lrc.times(${J(l1)})`)
+  const lastE = await ev(cdp, '__lrc.last()')
+  assert(
+    checks,
+    'BI.e 未切分行 → 行级打轴',
+    lastE !== null && lastE.kind === 'manual-timestamp' && timesE.length === 1 && timesE[0] === 17000,
+    JSON.stringify({ kind: lastE && lastE.kind, timesE }),
+  )
+
+  await ev(cdp, `__lrc.store.getState().selectLine(${J(l0)})`)
+  await ev(cdp, '__lrc.store.getState().setWordCursor(null)')
+  await ev(cdp, '__lrc.store.getState().setPlayhead(15500)')
+  await keyPress(cdp, 'Space', ' ', 32)
+  const wordsE = await ev(cdp, `__lrc.wordTimes(${J(l0)})`)
+  const lastE2 = await ev(cdp, '__lrc.last()')
+  assert(
+    checks,
+    'BI.e 切分行 → 字级打轴',
+    lastE2 !== null && lastE2.kind === 'word-timestamp' && wordsE[0] === 15500,
+    JSON.stringify({ kind: lastE2 && lastE2.kind, wordsE }),
+  )
+}
+
+/**
+ * BJ：时间三位毫秒 + 缩小态字卡条横向滚动容器。
+ *
+ * 覆盖：行级卡片标签 `mm:ss.mmm`、操作日志描述三位毫秒（全局收敛）、
+ * 放大态 chip `ss.mmm`、缩小态字卡条溢出后 `scrollWidth > clientWidth`（可滚动但不显滚动条）。
+ */
+async function testBJ(cdp, checks) {
+  const ids = await ev(cdp, '__lrc.ids()')
+  const [l0, l1] = ids
+
+  // ---------- BJ.a：缩小态行级时间标签三位毫秒 ----------
+  await ev(cdp, `__lrc.store.getState().clearLineTime(${J(l0)})`)
+  await ev(cdp, `__lrc.store.getState().stampLine(${J(l0)}, 12120)`)
+  await setView(cdp, 0, 20000)
+  const lineText = await ev(
+    cdp,
+    `(function(){var b=__lrc.block(${J(l0)});return b?b.textContent:''})()`,
+  )
+  assert(checks, 'BJ.a 行级时间标签三位毫秒', /00:12\.120/.test(lineText), JSON.stringify(lineText))
+
+  // ---------- BJ.a2：全局收敛 —— 操作日志描述同样三位毫秒 ----------
+  // 刻度尺是 canvas 绘制，文本不进 DOM，无法直接断言；改断言"同一 formatTimecode
+  // 调用族"的日志描述，证明 formatTimecode 本体已全局三位（而非仅块标签走特例）。
+  const lastDesc = await ev(
+    cdp,
+    `(function(){var e=__lrc.last();return e&&e.description?e.description:''})()`,
+  )
+  assert(checks, 'BJ.a2 日志描述三位毫秒', /00:12\.120/.test(lastDesc), JSON.stringify(lastDesc))
+
+  // ---------- BJ.b：放大态 chip 时间三位毫秒 ----------
+  await ev(cdp, `__lrc.store.getState().stampWordAt(${J(l0)}, 0, 12008)`)
+  await setView(cdp, 11500, 2600)
+  const chipText = await ev(
+    cdp,
+    `(function(){var b=__lrc.block(${J(l0)});var c=b?b.querySelector('[data-word-chip]'):null;return c?c.textContent:''})()`,
+  )
+  assert(checks, 'BJ.b 放大态 chip 时间三位毫秒', /^12\.008/.test(chipText), JSON.stringify(chipText))
+
+  // ---------- BJ.c：缩小态字卡条溢出 → 可横向滚动 ----------
+  const segCount = await ev(
+    cdp,
+    `(function(){
+       var st=__lrc.store.getState();
+       var line=st.document.lines.filter(function(l){return l.id===${J(l1)}})[0];
+       if(!line) return -1;
+       var t=line.text, segs=[], times=[];
+       for(var i=0;i<t.length;i++){segs.push({start:i,end:i+1,text:t.charAt(i)});times.push(20000+i*100);}
+       var r=st.commitWordSegments(${J(l1)}, segs, {times: times});
+       return r.ok ? segs.length : -1;
+     })()`,
+  )
+  await setView(cdp, 16500, 20000)
+  const strip = await ev(
+    cdp,
+    `(function(){
+       var b=__lrc.block(${J(l1)});
+       var s=b?b.querySelector('[data-word-strip-scroll]'):null;
+       return s?{sw:s.scrollWidth,cw:s.clientWidth,n:s.querySelectorAll('[data-word-strip]').length}:null;
+     })()`,
+  )
+  assert(checks, 'BJ.c 切分成功', segCount > 0, JSON.stringify(segCount))
+  assert(
+    checks,
+    'BJ.c 缩小态字卡条内容溢出且可滚动',
+    strip !== null && strip.n === segCount && strip.sw > strip.cw,
+    JSON.stringify(strip),
+  )
+}
+
+/**
+ * BK：点行落游标 + 左右键字级微调 + 字卡条死区跟随滚动。
+ *
+ * 覆盖：缩小态点行体 → 游标落首字（蓝光在字卡条内）、整行拖动不清游标、
+ * 有游标时左右键只微调该字（±10ms）且行级不变、超长字卡条按死区跟随滚动。
+ */
+async function testBK(cdp, checks) {
+  const ids = await ev(cdp, '__lrc.ids()')
+  const [l0, l1] = ids
+
+  // 行体命中点：块上半部（避开底部字卡条，确保不落在 chip 上）
+  const bodyPoint = async (id) => {
+    const r = await ev(cdp, `__lrc.rect(${J(id)})`)
+    const x = Math.round(r.left + r.width / 2)
+    const y = Math.round(r.top + Math.max(6, r.height * 0.28))
+    const hit = await ev(cdp, `__lrc.elementAt(${x}, ${y})`)
+    if (hit !== id) throw new Error('BK body point miss: ' + hit)
+    return { x, y }
+  }
+
+  // ---------- BK.a：缩小态点行体 → 游标落首字 + 蓝光在字卡条内 ----------
+  await ev(cdp, `__lrc.store.getState().clearLineTime(${J(l0)})`)
+  await ev(cdp, `__lrc.store.getState().stampLine(${J(l0)}, 12000)`)
+  await ev(cdp, `__lrc.store.getState().stampWordAt(${J(l0)}, 0, 12000)`)
+  await ev(cdp, `__lrc.store.getState().stampWordAt(${J(l0)}, 1, 13000)`)
+  await ev(cdp, '__lrc.store.getState().setWordCursor(null)')
+  await setView(cdp, 11000, 24000)
+  const pointA = await bodyPoint(l0)
+  await mouse(cdp, 'mousePressed', pointA.x, pointA.y)
+  await sleep(20)
+  await mouse(cdp, 'mouseReleased', pointA.x, pointA.y)
+  await sleep(100)
+  const cursorA = await ev(cdp, '__lrc.store.getState().wordCursor')
+  const litA = await ev(
+    cdp,
+    `(function(){
+       var b=__lrc.block(${J(l0)});
+       var s=b?b.querySelector('[data-word-strip-scroll]'):null;
+       return s?s.querySelectorAll('[data-word-strip][data-word-cursor]').length:0;
+     })()`,
+  )
+  assert(
+    checks,
+    'BK.a 点缩小态行体 → 游标落首字',
+    cursorA !== null && cursorA.lineId === l0 && cursorA.wordIndex === 0,
+    JSON.stringify(cursorA),
+  )
+  assert(checks, 'BK.a 蓝光渲染在字卡条内', litA === 1, JSON.stringify(litA))
+
+  // ---------- BK.b：整行拖动不清空 / 不篡改游标 ----------
+  const timesBefore = await ev(cdp, `__lrc.times(${J(l0)})`)
+  const pointB = await bodyPoint(l0)
+  await mouse(cdp, 'mousePressed', pointB.x, pointB.y)
+  await sleep(20)
+  await mouse(cdp, 'mouseMoved', pointB.x + 20, pointB.y)
+  await sleep(20)
+  await mouse(cdp, 'mouseMoved', pointB.x + 90, pointB.y)
+  await sleep(20)
+  await mouse(cdp, 'mouseReleased', pointB.x + 90, pointB.y)
+  await sleep(140)
+  const cursorB = await ev(cdp, '__lrc.store.getState().wordCursor')
+  const timesAfter = await ev(cdp, `__lrc.times(${J(l0)})`)
+  assert(
+    checks,
+    'BK.b 整行拖动后游标仍为首字',
+    cursorB !== null && cursorB.lineId === l0 && cursorB.wordIndex === 0,
+    JSON.stringify(cursorB),
+  )
+  assert(
+    checks,
+    'BK.b 拖动确实移动了行（游标未被拖动分支改写）',
+    Array.isArray(timesAfter) && timesAfter[0] !== timesBefore[0],
+    JSON.stringify({ timesBefore, timesAfter }),
+  )
+
+  // ---------- BK.c：有游标时左右键只微调该字 ----------
+  await ev(cdp, `__lrc.store.getState().clearLineTime(${J(l0)})`)
+  await ev(cdp, `__lrc.store.getState().stampLine(${J(l0)}, 12000)`)
+  await ev(cdp, `__lrc.store.getState().stampWordAt(${J(l0)}, 0, 12000)`)
+  await ev(cdp, `__lrc.store.getState().stampWordAt(${J(l0)}, 1, 13000)`)
+  await ev(cdp, `__lrc.store.getState().selectLine(${J(l0)})`)
+  await ev(cdp, `__lrc.store.getState().setWordCursor(${J(l0)}, 1)`)
+  await keyPress(cdp, 'ArrowRight', 'ArrowRight', 39)
+  await sleep(60)
+  const wordsRight = await ev(cdp, `__lrc.wordTimes(${J(l0)})`)
+  const timesRight = await ev(cdp, `__lrc.times(${J(l0)})`)
+  await keyPress(cdp, 'ArrowLeft', 'ArrowLeft', 37)
+  await sleep(60)
+  const wordsLeft = await ev(cdp, `__lrc.wordTimes(${J(l0)})`)
+  assert(
+    checks,
+    'BK.c 右移只微调字级 +10ms',
+    wordsRight[0] === 12000 && wordsRight[1] === 13010,
+    JSON.stringify(wordsRight),
+  )
+  assert(
+    checks,
+    'BK.c 左移把字级调回 13000',
+    wordsLeft[1] === 13000,
+    JSON.stringify(wordsLeft),
+  )
+  assert(checks, 'BK.c 行级时间不变', timesRight[0] === 12000, JSON.stringify(timesRight))
+
+  // ---------- BK.d：字卡条死区跟随滚动 ----------
+  const segCount = await ev(
+    cdp,
+    `(function(){
+       var st=__lrc.store.getState();
+       var line=st.document.lines.filter(function(l){return l.id===${J(l1)}})[0];
+       if(!line) return -1;
+       var t=line.text, segs=[], times=[];
+       for(var i=0;i<t.length;i++){segs.push({start:i,end:i+1,text:t.charAt(i)});times.push(20000+i*100);}
+       var r=st.commitWordSegments(${J(l1)}, segs, {times: times});
+       return r.ok ? segs.length : -1;
+     })()`,
+  )
+  await setView(cdp, 16500, 20000)
+  const readScroll = () =>
+    ev(
+      cdp,
+      `(function(){
+         var b=__lrc.block(${J(l1)});
+         var s=b?b.querySelector('[data-word-strip-scroll]'):null;
+         return s?s.scrollLeft:null;
+       })()`,
+    )
+  await ev(cdp, `__lrc.store.getState().setWordCursor(${J(l1)}, 0)`)
+  await sleep(450)
+  const scrollStart = await readScroll()
+  await ev(cdp, `__lrc.store.getState().setWordCursor(${J(l1)}, ${segCount - 1})`)
+  await sleep(700)
+  const scrollEnd = await readScroll()
+  await ev(cdp, `__lrc.store.getState().setWordCursor(${J(l1)}, 0)`)
+  await sleep(700)
+  const scrollBack = await readScroll()
+  assert(checks, 'BK.d 切分成功（超长字卡条）', segCount > 0, JSON.stringify(segCount))
+  assert(
+    checks,
+    'BK.d 游标到末尾 → 字卡条向右滚动',
+    typeof scrollEnd === 'number' && scrollEnd > 0,
+    JSON.stringify({ scrollStart, scrollEnd }),
+  )
+  assert(
+    checks,
+    'BK.d 游标回开头 → 字卡条回滚到 0',
+    typeof scrollBack === 'number' && scrollBack < 5,
+    JSON.stringify({ scrollBack }),
+  )
+}
+
+/**
+ * BL：行首拖动接吸附——吸附候选含「本行字级时间」。
+ *
+ * 覆盖：拖行首靠近本行首字（12008）时被吸附并显示辅助线；松手后行首与首字重合，
+ * 且推土机判定 `字级 < 行首` 为 false，字级原样保留、delta 只有行首一项；
+ * 对照：关吸附后越过首字，首字被推平到新行首。
+ */
+async function testBL(cdp, checks) {
+  const ids = await ev(cdp, '__lrc.ids()')
+  const id = ids[0]
+  // 放大态才有 word 卡片与行首热区（同 BE）
+  await ev(cdp, '__lrc.setView(11500, 2200)')
+  await sleep(180)
+  const view = await ev(cdp, '__lrc.viewInfo()')
+  const ppms = view.pixelsPerMs
+  assert(checks, 'BL.setup 放大态 ppms ≥ 0.3', ppms >= 0.3, `ppms=${ppms}`)
+
+  // 只留「本行字级」一类候选：关播放头 / 其他行 / 网格
+  await ev(
+    cdp,
+    '__lrc.updateSettings({ snapEnabled: true, snapToPlayhead: false, snapToLineTimes: false, snapToGrid: false })',
+  )
+  // 固定基线：行首 12120、首字 12008（在行首左侧 112ms）、次字 13343
+  await ev(cdp, `__lrc.store.getState().clearLineTime(${J(id)})`)
+  await ev(cdp, `__lrc.store.getState().stampLine(${J(id)}, 12120)`)
+  await ev(cdp, `__lrc.store.getState().stampWordAt(${J(id)}, 0, 12008)`)
+  await ev(cdp, `__lrc.store.getState().stampWordAt(${J(id)}, 1, 13343)`)
+  await sleep(120)
+
+  const timesBefore = await ev(cdp, `__lrc.times(${J(id)})`)
+  const wordsBefore = await ev(cdp, `__lrc.wordTimes(${J(id)})`)
+  const startMs = timesBefore.length === 1 ? timesBefore[0] : null
+  const firstWordMs = Array.isArray(wordsBefore) ? wordsBefore[0] : null
+  assert(
+    checks,
+    'BL.setup 基线：行首 12120 / 首字 12008',
+    startMs === 12120 && firstWordMs === 12008 && wordsBefore[1] === 13343,
+    J({ timesBefore, wordsBefore }),
+  )
+
+  // 落点：首字右侧 3px（裸落点距首字 3px，在 8px 吸附阈值内 → 应吸回首字）
+  const dxToSnap = Math.round((firstWordMs - startMs) * ppms) + 3
+  const rectBefore = await ev(cdp, `__lrc.rect(${J(id)})`)
+  const logBefore = await ev(cdp, '__lrc.logLen()')
+  let mid = null
+  await dragBlockEdge(cdp, id, dxToSnap, async () => {
+    mid = {
+      guide: await ev(
+        cdp,
+        `(function(){var g=document.querySelector('[data-snap-guide]');return g?{display:g.style.display,ms:g.dataset.snapMs}:null})()`,
+      ),
+      rect: await ev(cdp, `__lrc.rect(${J(id)})`),
+      logLen: await ev(cdp, '__lrc.logLen()'),
+      times: await ev(cdp, `__lrc.times(${J(id)})`),
+    }
+  })
+
+  const timesAfter = await ev(cdp, `__lrc.times(${J(id)})`)
+  const wordsAfter = await ev(cdp, `__lrc.wordTimes(${J(id)})`)
+  const logAfter = await ev(cdp, '__lrc.logLen()')
+  const last = await ev(cdp, '__lrc.last()')
+
+  // BL.a 拖动中：吸附到首字 + 几何按吸附后位移预览 + 零 store 写入
+  assert(
+    checks,
+    'BL.a 拖动中辅助线吸附到本行首字',
+    mid !== null && mid.guide !== null && mid.guide.display === 'block' &&
+      Number(mid.guide.ms) === firstWordMs,
+    J(mid && mid.guide),
+  )
+  assert(
+    checks,
+    'BL.a 拖动中块左缘按吸附后位移预览',
+    mid !== null &&
+      Math.abs(mid.rect.left - rectBefore.left - (firstWordMs - startMs) * ppms) <= 2,
+    `Δleft=${mid ? (mid.rect.left - rectBefore.left).toFixed(1) : 'n/a'} 期望 ${((firstWordMs - startMs) * ppms).toFixed(1)}`,
+  )
+  assert(
+    checks,
+    'BL.a 拖动中零 store 写入',
+    mid !== null && mid.logLen === logBefore && eq(mid.times, timesBefore),
+    `logLen=${mid ? mid.logLen : 'n/a'}/${logBefore} times=${mid ? J(mid.times) : 'n/a'}`,
+  )
+
+  // BL.b 松手后：行首吸到首字，字级未被推平，delta 只有行首一项
+  assert(
+    checks,
+    'BL.b 松手后行首吸到首字 12008',
+    timesAfter.length === 1 && timesAfter[0] === firstWordMs,
+    J(timesAfter),
+  )
+  assert(
+    checks,
+    'BL.b 首字时间未被推平（仍为 12008）',
+    wordsAfter[0] === firstWordMs && wordsAfter[1] === wordsBefore[1],
+    J(wordsAfter),
+  )
+  assert(checks, 'BL.b 日志恰好 +1', logAfter === logBefore + 1, `${logBefore} -> ${logAfter}`)
+  assert(checks, 'BL.b kind=manual-timestamp', last.kind === 'manual-timestamp', last.kind)
+  const values = last.delta !== undefined && last.delta.mode === 'absolute' ? last.delta.values : null
+  assert(
+    checks,
+    'BL.b values 仅行首一项（字级未被推平）',
+    values !== null && values.length === 1 &&
+      values[0].lineId === id && values[0].wordIndex === null && values[0].timeMs === firstWordMs,
+    J(values),
+  )
+
+  // BL.c 对照：关吸附后越过首字 → 推土机把首字推平到新行首
+  await ev(cdp, '__lrc.updateSettings({ snapEnabled: false })')
+  const start2 = timesAfter[0]
+  const dx2 = Math.max(1, Math.round(15 * ppms))
+  let mid2 = null
+  await dragBlockEdge(cdp, id, dx2, async () => {
+    mid2 = await ev(
+      cdp,
+      `(function(){var g=document.querySelector('[data-snap-guide]');return g?{display:g.style.display,ms:g.dataset.snapMs}:null})()`,
+    )
+  })
+  const times2 = await ev(cdp, `__lrc.times(${J(id)})`)
+  const words2 = await ev(cdp, `__lrc.wordTimes(${J(id)})`)
+  const last2 = await ev(cdp, '__lrc.last()')
+  const expected2 = start2 + Math.round(dx2 / ppms)
+  assert(
+    checks,
+    'BL.c 关吸附后辅助线不再吸首字',
+    mid2 !== null && mid2.display === 'block' && Number(mid2.ms) !== firstWordMs,
+    J(mid2),
+  )
+  assert(
+    checks,
+    'BL.c 关吸附越过首字：行首 = 起点 + 位移',
+    times2.length === 1 && times2[0] === expected2,
+    `${J(times2)} 期望 ${expected2}`,
+  )
+  assert(
+    checks,
+    'BL.c 关吸附越过首字：首字被推平到新行首',
+    words2[0] === expected2 && words2[1] === wordsBefore[1],
+    `${J(words2)} 期望 ${expected2}`,
+  )
+  const values2 = last2.delta !== undefined && last2.delta.mode === 'absolute' ? last2.delta.values : null
+  assert(
+    checks,
+    'BL.c values = 行首 + 被推平首字',
+    values2 !== null && values2.length === 2 &&
+      values2[0].lineId === id && values2[0].wordIndex === null && values2[0].timeMs === expected2 &&
+      values2[1].lineId === id && values2[1].wordIndex === 0 && values2[1].timeMs === expected2,
+    J(values2),
+  )
+
+  // 组尾恢复默认设置
+  await ev(
+    cdp,
+    '__lrc.updateSettings({ snapEnabled: true, snapToPlayhead: true, snapToLineTimes: true, snapToGrid: false })',
+  )
+}
+
 const TESTS = [
   ['A', '多选拖动 → 一条 selection-offset 整组等量位移', testA],
   ['B', '拖动中零 store 写入', testB],
@@ -3722,6 +4553,11 @@ const TESTS = [
   ['BE', '行首拖动：热区改行首时间、拖动中字卡不动、松手推平被越过的字卡', testBE],
   ['BF', '确认时机：正文输入即确认 / 行级保存时确认（含草案缺口）', testBF],
   ['BG', '弹窗内勾选「以后用 toast 提示」：写对应设置项、本次照常执行、下次只 toast', testBG],
+  ['BH', '全局 Tab 焦点循环：行编辑 / 文本导入 textarea / 双开切分 / 双开确认框', testBH],
+  ['BI', '字级空格打轴：行级+首字同条日志 / 一步撤销 / 末字换行 / 上下键按字 / 缩放无关', testBI],
+  ['BJ', '时间三位毫秒：行级标签 / 放大态 chip / 缩小态字卡条溢出可横向滚动', testBJ],
+  ['BK', '点行落游标 / 左右键字级微调 / 字卡条死区跟随滚动', testBK],
+  ['BL', '行首拖动接吸附：吸本行首字不推平 / 关吸附越过首字推平', testBL],
 ]
 
 async function main() {

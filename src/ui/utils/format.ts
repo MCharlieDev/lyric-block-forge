@@ -10,7 +10,7 @@ function pad(value: number, width = 2): string {
 }
 
 /**
- * 格式化为 LRC 风格时间码 `mm:ss.xx`（百分秒）。
+ * 格式化为 LRC 风格时间码 `mm:ss.mmm`（毫秒）。
  *
  * @param ms 毫秒
  * @returns 时间码字符串
@@ -19,22 +19,22 @@ export function formatTimecode(ms: number): string {
   const safe = Math.max(0, ms)
   const minutes = Math.floor(safe / 60000)
   const seconds = Math.floor((safe % 60000) / 1000)
-  const centis = Math.floor((safe % 1000) / 10)
-  return `${pad(minutes)}:${pad(seconds)}.${pad(centis)}`
+  const millis = Math.floor(safe % 1000)
+  return `${pad(minutes)}:${pad(seconds)}.${pad(millis, 3)}`
 }
 
 /**
- * 格式化为放大态迷你卡的短时间码 `ss.xx`（百分秒），舍弃分钟。
+ * 格式化为迷你卡的短时间码 `ss.mmm`（三位毫秒），舍弃分钟。
  *
  * @param ms 毫秒；`null` 表示该 chip 没有时间戳
- * @returns 形如 `12.08` 的字符串；无时间戳返回 `--`
+ * @returns 形如 `12.008` 的字符串；无时间戳返回 `--`
  */
 export function formatMiniTime(ms: number | null): string {
   if (ms === null) return '--'
   const safe = Math.max(0, ms)
   const seconds = Math.floor((safe % 60000) / 1000)
-  const centis = Math.floor((safe % 1000) / 10)
-  return `${pad(seconds)}.${pad(centis)}`
+  const millis = Math.floor(safe % 1000)
+  return `${pad(seconds)}.${pad(millis, 3)}`
 }
 
 /**

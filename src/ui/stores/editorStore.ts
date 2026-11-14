@@ -131,6 +131,15 @@ export interface EditorState {
   playback: PlaybackState
   /** 选择状态 */
   selection: SelectionState
+  /**
+   * 字级游标（文本流游标）：当前要打轴 / 已被高亮的字。
+   *
+   * **独立于 `selection` 存放**：行选择在换行时会被 `selectLine` 整体重写，
+   * 若把游标塞进 `selection`，每次换行都会残留上一行的字下标。
+   * `wordIndex` 是行模型 `wordTimestamps` 的**文本顺序**下标（与 chip 的时间顺序不同）。
+   * 为 `null` 表示当前按行打轴（没有字级目标）。
+   */
+  wordCursor: { lineId: string; wordIndex: number } | null
   /** 日志面板视图 */
   logView: LogViewState
   /**
@@ -462,6 +471,36 @@ export interface EditorState {
   selectLineRange: (lineId: string) => void
   /** 清空行选择：`lineIds` / `activeLineId` / `anchorLineId` 一并归零（点时间轴背景时用） */
   clearLineSelection: () => void
+  /**
+   * 设置字级游标。
+   *
+   * `lineId` 传 `null` 表示**清空游标**（回到整行打轴模式）；
+   * 此时 `wordIndex` 被忽略，内部一律落 `null`。
+   *
+   * 本 action 只写游标，**不动行选择**：换行由调用方（命令层 / 轨道）
+   * 显式调 `selectLine` / `setActiveLine`，两件事分开才能保证视口与高亮各自可控。
+   *
+   * @param lineId 游标所在行 ID；`null` 表示清空
+   * @param wordIndex 字在行模型 `wordTimestamps` 中的文本顺序下标（默认 0）
+   */
+  setWordCursor: (lineId: string | null, wordIndex?: number) => void
+  /**
+   * 给某个字打轴（空格打轴的字级分支），可撤销。
+   *
+   * 落**一条** `word-timestamp`（`absolute`）：
+   * - 字级项 `{ lineId, wordIndex, timeMs }`；
+   * - 若 `wordIndex === 0` 且该行**尚无行级时间**，同一条 `values` 里再带一项
+   *   `{ lineId, wordIndex: null, timeMs }` —— 未打轴行的块起点来自占位，
+   *   不同时写行级会让字卡坐标错位；同条日志也保证撤销一步即回到打轴前。
+   *
+   * 写入后游标顺延一个字；已是本行最后一个字则清空游标，
+   * 由命令层（`stampAtCursor`）决定是否换到下一可见行。
+   *
+   * @param lineId 目标行 ID
+   * @param wordIndex 目标字的文本顺序下标
+   * @param timeMs 落点时间（毫秒）
+   */
+  stampWordAt: (lineId: string, wordIndex: number, timeMs: number) => void
   /** 设置播放头位置 */
   setPlayhead: (timeMs: number) => void
   /**
@@ -660,6 +699,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   audioAsset: null,
   playback: { isPlaying: false, playheadMs: 0, rate: 1, volume: 1 },
   selection: { lineIds: [], activeLineId: null, anchorLineId: null, entryIds: [] },
+  wordCursor: null,
   logView: { tab: 'all', filter: {}, archivedDisplay: 'thin', expandedEntryIds: [], focusEntryId: null },
   notice: null,
 
@@ -693,6 +733,8 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         anchorLineId: firstVisibleId,
         entryIds: [],
       },
+      // 换文档 = 换文本流，旧游标的行 / 下标一律失效
+      wordCursor: null,
       logView: { tab: 'all', filter: {}, archivedDisplay: 'thin', expandedEntryIds: [], focusEntryId: null },
     })
   },
@@ -759,6 +801,45 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       baseVersion: document.version,
     })
     set({ log: next, replay: computeReplay(document, next) })
+  },
+
+  stampWordAt: (lineId, wordIndex, timeMs) => {
+    if (!Number.isFinite(timeMs) || timeMs < 0) return
+    if (!Number.isInteger(wordIndex) || wordIndex < 0) return
+    const { document, replay, log } = get()
+    const line = document.lines.find((item) => item.id === lineId)
+    if (line === undefined) return
+    // 越界下标静默拒绝：游标可能因切分被改写而失效
+    if (wordIndex >= line.wordTimestamps.length) return
+    const landedMs = Math.round(timeMs)
+    const values: Array<{ lineId: string; wordIndex: number | null; timeMs: number }> = [
+      { lineId, wordIndex, timeMs: landedMs },
+    ]
+    // 首字且行级还没打轴：同一条 absolute 里把行级一起落上。
+    // 未打轴行的块起点是占位值，不写行级会让字卡坐标错位；
+    // 同条日志保证「行级 + 首字」撤销一步就全部回退（与 setLineStartWithPush 同口径）。
+    if (wordIndex === 0 && getReplayedLineTime(replay, lineId) === null) {
+      values.push({ lineId, wordIndex: null, timeMs: landedMs })
+    }
+    const next = appendOperation(log, {
+      kind: 'word-timestamp',
+      scope: {
+        lineIds: [lineId],
+        wordRefs: [{ lineId, wordIndex }],
+        timeRange: null,
+      },
+      delta: { mode: 'absolute', values },
+      description: `字级打轴「${line.text}」第 ${wordIndex + 1} 字（${formatTimecode(landedMs)}）`,
+      baseVersion: document.version,
+    })
+    const nextIndex = wordIndex + 1
+    set({
+      log: next,
+      replay: computeReplay(document, next),
+      // 游标顺延一个字；本行打完 → null，由命令层决定换行还是回到整行打轴
+      wordCursor:
+        nextIndex < line.wordTimestamps.length ? { lineId, wordIndex: nextIndex } : null,
+    })
   },
 
   setLineStartWithPush: (lineId, newStartMs) => {
@@ -1407,6 +1488,15 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   clearLineSelection: () =>
     set({
       selection: { ...get().selection, lineIds: [], activeLineId: null, anchorLineId: null },
+    }),
+
+  setWordCursor: (lineId, wordIndex = 0) =>
+    set({
+      // lineId 为 null = 清空游标；wordIndex 必须是非负整数，否则退化为首字
+      wordCursor:
+        lineId === null
+          ? null
+          : { lineId, wordIndex: Number.isInteger(wordIndex) && wordIndex >= 0 ? wordIndex : 0 },
     }),
 
   setPlayhead: (timeMs) =>

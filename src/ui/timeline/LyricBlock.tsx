@@ -49,6 +49,11 @@ interface LyricBlockProps {
   wordChips: WordChipBox[] | null
   /** 是否降级为极窄的菱形关键帧（整块即拖动把手） */
   isDegraded: boolean
+  /**
+   * 字级游标在本行的字下标（文本顺序，与 `chips[].indices` 对齐）；
+   * `null` 表示本行不是游标所在行，不渲染蓝光。
+   */
+  cursorWordIndex: number | null
 }
 
 /** 块相对行顶部的内缩，避免块与行的底纹贴边。 */
@@ -92,6 +97,7 @@ export function LyricBlock({
   chips,
   wordChips,
   isDegraded,
+  cursorWordIndex,
 }: LyricBlockProps) {
   const hasWords = line.wordTimestamps.length > 0
   const extraCount = times.length > 1 ? times.length - 1 : 0
@@ -211,6 +217,8 @@ export function LyricBlock({
               const box = wordChips?.[index]
               const grouped = inMultiGroup(index)
               const head = isGroupHead(index)
+              // 游标高亮：chip 可能横向合并多个字，只要包含游标字就整卡点亮
+              const isCursor = cursorWordIndex !== null && chip.indices.includes(cursorWordIndex)
               // 组内非首卡：内容从前一张右缘之后开始；组尾补回右侧内边距（与单卡对称）
               const groupPadding =
                 grouped && !head
@@ -228,10 +236,15 @@ export function LyricBlock({
                   data-word-chip=""
                   data-chip-indices={chip.indices.join(',')}
                   data-chip-time-ms={chip.timeMs ?? ''}
+                  data-word-cursor={isCursor ? '' : undefined}
                   className={`absolute top-1 bottom-0 flex flex-col items-start justify-center gap-0.5 ${
                     // 组首的时间戳要向右溢出阶梯之上，卡片不能裁剪；其余卡保持裁剪
                     grouped && head ? 'overflow-visible' : 'overflow-hidden'
-                  } rounded-sm bg-white/5 px-1 ring-1 ring-inset ring-white/10 transition-colors hover:bg-white/10`}
+                  } rounded-sm px-1 transition-colors ${
+                    isCursor
+                      ? 'bg-blue-500/20 ring-2 ring-blue-500'
+                      : 'bg-white/5 ring-1 ring-inset ring-white/10 hover:bg-white/10'
+                  }`}
                   style={{
                     left: `${box?.leftPx ?? 0}px`,
                     width: `${box?.widthPx ?? WORD_CHIP_MIN_WIDTH_PX}px`,
@@ -256,7 +269,7 @@ export function LyricBlock({
         <>
           <span className="flex w-full items-center gap-1 truncate font-mono text-[10px] leading-none text-neutral-400">
             <span className={isUntimed ? 'text-neutral-600' : 'text-neutral-300'}>
-              {times.length === 0 ? '--:--.--' : formatTimecode(times[0])}
+              {times.length === 0 ? '--:--.---' : formatTimecode(times[0])}
             </span>
             {extraCount > 0 ? (
               <span className="rounded bg-white/10 px-1 text-[9px] text-neutral-400">+{extraCount}</span>
@@ -270,18 +283,29 @@ export function LyricBlock({
           <span className="mt-0.5 w-full truncate text-xs leading-tight text-neutral-100">{line.text}</span>
 
           {hasWords ? (
-            <span className="mt-0.5 flex w-full gap-0.5 overflow-hidden">
+            <span
+              data-word-strip-scroll=""
+              className="mt-0.5 flex w-full gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            >
               {line.wordTimestamps.map((word, index) => (
                 <span
                   key={`${line.id}-w${index}`}
-                  className="truncate rounded-sm bg-white/5 px-1 text-[10px] leading-tight text-neutral-300"
+                  data-word-strip=""
+                  data-word-cursor={index === cursorWordIndex ? '' : undefined}
+                  className={`shrink-0 whitespace-nowrap rounded-sm px-1 text-[10px] leading-tight transition-colors ${
+                    index === cursorWordIndex
+                      ? 'bg-blue-500/20 text-neutral-100 ring-2 ring-blue-500'
+                      : 'bg-white/5 text-neutral-300'
+                  }`}
                   style={{
                     flexGrow: chipSpans[index],
-                    flexBasis: 0,
+                    flexBasis: 'auto',
+                    flexShrink: 0,
                     minWidth: `${WORD_CHIP_MIN_WIDTH_PX}px`,
                   }}
                 >
-                  {word.text}
+                  {/* 缩略：最多三字，超出加省略号，避免单卡无限拉长 */}
+                  {word.text.length > 3 ? `${word.text.slice(0, 3)}...` : word.text}
                 </span>
               ))}
             </span>

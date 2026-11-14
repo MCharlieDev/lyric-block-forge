@@ -1,10 +1,7 @@
-import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { DEFAULT_METADATA_PREFIX_RULES, type MetadataPrefixRule } from '@core'
 
-/** 弹窗内可聚焦元素选择器（focus trap 用）。 */
-const FOCUSABLE_SELECTOR =
-  'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
 /** 前缀中不允许出现的分隔符：与内核 `METADATA_PREFIX_SEPARATORS` 保持一致。 */
 const PREFIX_SEPARATORS = '：: \t'
 
@@ -61,8 +58,8 @@ export interface MetadataPrefixDialogProps {
 /**
  * 元数据前缀规则编辑弹窗。
  *
- * 居中独立模态：编辑即时写回设置；支持 Esc 关闭，遮罩关闭由独立设置项控制，
- * 并自行实现 Tab 焦点循环与关闭后的焦点还原。
+ * 居中独立模态：编辑即时写回设置；支持 Esc 关闭，遮罩关闭由独立设置项控制。
+ * Tab 焦点循环由全局 `useDialogFocusTrap` 接管，关闭后的焦点还原仍在本组件。
  */
 export function MetadataPrefixDialog({
   rules,
@@ -70,7 +67,6 @@ export function MetadataPrefixDialog({
   closeOnBackdropClick,
   onClose,
 }: MetadataPrefixDialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null)
   const addButtonRef = useRef<HTMLButtonElement>(null)
   const prefixInputRefs = useRef<Array<HTMLInputElement | null>>([])
   /** 待聚焦的行号；`-1` 表示聚焦「+ 添加规则」。 */
@@ -105,33 +101,6 @@ export function MetadataPrefixDialog({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose])
 
-  /** Tab / Shift+Tab 在弹窗内首尾回环。 */
-  const handleTrapKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Tab') return
-    const dialog = dialogRef.current
-    if (!dialog) return
-
-    const focusables = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-      (element) => element.offsetParent !== null,
-    )
-    if (focusables.length === 0) return
-
-    const first = focusables[0]
-    const last = focusables[focusables.length - 1]
-    const active = document.activeElement
-    const inside = active instanceof Node && dialog.contains(active)
-
-    if (event.shiftKey) {
-      if (!inside || active === first) {
-        event.preventDefault()
-        last.focus()
-      }
-    } else if (!inside || active === last) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
-
   const updateRule = (index: number, patch: Partial<MetadataPrefixRule>) => {
     onChange(rules.map((rule, current) => (current === index ? { ...rule, ...patch } : rule)))
   }
@@ -155,11 +124,9 @@ export function MetadataPrefixDialog({
       }}
     >
       <div
-        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="metadata-prefix-dialog-title"
-        onKeyDown={handleTrapKeyDown}
         className="flex max-h-[80vh] w-[720px] max-w-[calc(100vw-24px)] flex-col rounded border border-divider bg-panel shadow-xl"
       >
         {/* 头部 */}

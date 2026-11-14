@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -218,6 +219,9 @@ export function LyricTrack() {
   const toggleLineSelection = useEditorStore((state) => state.toggleLineSelection)
   const selectLineRange = useEditorStore((state) => state.selectLineRange)
   const clearLineSelection = useEditorStore((state) => state.clearLineSelection)
+  /** 字级游标：视觉高亮与空格打轴共用同一份状态（与缩放 / 卡片形态无关） */
+  const wordCursor = useEditorStore((state) => state.wordCursor)
+  const setWordCursor = useEditorStore((state) => state.setWordCursor)
   const stampLine = useEditorStore((state) => state.stampLine)
   const setLineStartWithPush = useEditorStore((state) => state.setLineStartWithPush)
   const moveLinesByOffset = useEditorStore((state) => state.moveLinesByOffset)
@@ -303,7 +307,7 @@ export function LyricTrack() {
       const widths = measureLineWidths({
         text: row.line.text,
         translation: row.line.translation,
-        timecode: row.times.length > 0 ? formatTimecode(row.times[0]) : '--:--.--',
+        timecode: row.times.length > 0 ? formatTimecode(row.times[0]) : '--:--.---',
         extraCount: Math.max(0, row.times.length - 1),
         hasWords: row.line.wordTimestamps.length > 0,
         hasTranslation: Boolean(row.line.translation),
@@ -389,8 +393,12 @@ export function LyricTrack() {
    */
   const handleTrackClick = useCallback(() => {
     // 用按下时的命中记录判定：指针捕获会让 click 的 target 变成平面容器，event.target 不可信
-    if (!pressedOnBlockRef.current) clearLineSelection()
-  }, [clearLineSelection])
+    if (!pressedOnBlockRef.current) {
+      clearLineSelection()
+      // 点空白 = 退出字级游标，下一次空格回到整行打轴
+      setWordCursor(null)
+    }
+  }, [clearLineSelection, setWordCursor])
 
   /* ------------------------------------------------------------------ *
    * 拖动状态机（平面层事件委托）
@@ -504,9 +512,16 @@ export function LyricTrack() {
    * - `snapEnabled` 关闭 → 空数组（一律不吸）；
    * - `snapToPlayhead` → 播放头（每帧现取）；
    * - `snapToLineTimes` → 其他行的时间戳（排除参与集自身的时间值）；
-   * - `snapToGrid` → 视窗内刻度值。
+   * - `snapToGrid` → 视窗内刻度值；
+   * - 行首拖动 → 额外追加上被拖行自己的字级时间（见 `lineStartLineId`）。
+   *
+   * @param excludeTimesMs 需排除的参与集自身行级时间
+   * @param lineStartLineId 行首拖动时的被拖行 ID；非行首拖动传 `null`
    */
-  const collectTargetsMs = (excludeTimesMs: number[]): number[] => {
+  const collectTargetsMs = (
+    excludeTimesMs: number[],
+    lineStartLineId: string | null = null,
+  ): number[] => {
     const settings = useSettingsStore.getState().settings
     if (!settings.snapEnabled) return []
     const targets: number[] = []
@@ -515,6 +530,19 @@ export function LyricTrack() {
       const others = rowsRef.current.flatMap((row) => row.times)
       for (const target of others) {
         if (!excludeTimesMs.some((own) => Math.abs(own - target) < 1e-6)) targets.push(target)
+      }
+    }
+    // 行首拖动追加上「本行字级时间」：拖左缘可精确对齐首字，
+    // 且新行首 == 字级时间时推土机判定 `字级 < 行首` 为 false，字级原样保留。
+    // 行级时间本身已由 excludeTimesMs 排除，避免"吸到自己"导致拖不动。
+    if (lineStartLineId !== null) {
+      const row = rowsRef.current.find((item) => item.line.id === lineStartLineId)
+      if (row !== undefined) {
+        for (const wordMs of row.wordTimes) {
+          if (wordMs === null) continue
+          if (excludeTimesMs.some((own) => Math.abs(own - wordMs) < 1e-6)) continue
+          targets.push(wordMs)
+        }
       }
     }
     if (settings.snapToGrid) targets.push(...collectGridTimesMs())
@@ -526,7 +554,10 @@ export function LyricTrack() {
     snapOffsetPx(
       rawPx,
       session.pressedStartMs,
-      collectTargetsMs(session.excludeTimesMs),
+      collectTargetsMs(
+        session.excludeTimesMs,
+        session.mode === 'line-start' ? session.pressedLineId : null,
+      ),
       snapshot.pixelsPerMs,
     )
 
@@ -544,6 +575,20 @@ export function LyricTrack() {
     if (pressedLineId === undefined) return
     const pressedLayout = laidOutRef.current.find((item) => item.row.line.id === pressedLineId)
     const isDegraded = pressedLayout?.isDegraded === true
+    // 字级游标联动（与缩放 / 卡片形态无关）：按到放大态字卡 → 游标落在该字。
+    // 按行体（缩小态字卡条 / 块内空白）不在这里动游标：否则整行拖动会把游标一并清掉。
+    // 行体点击的落点（首字）与无切分行体的清空，统一推迟到 pointerup 的非拖动分支。
+    const chipEl = (event.target as HTMLElement).closest<HTMLElement>('[data-word-chip]')
+    const chipIndices =
+      chipEl === null
+        ? []
+        : (chipEl.dataset.chipIndices ?? '')
+            .split(',')
+            .map((value) => Number.parseInt(value, 10))
+            .filter((value) => Number.isInteger(value))
+    if (pressedLayout?.mode === 'word' && !isDegraded && chipIndices.length > 0) {
+      setWordCursor(pressedLineId, chipIndices[0])
+    }
     // 拦住默认行为，避免拖动时选中文字
     event.preventDefault()
 
@@ -587,15 +632,11 @@ export function LyricTrack() {
 
     // 放大态按到字卡：进入字级拖动（不参与行级选中与整行平移）。
     // 无时间戳的字卡（`data-chip-time-ms` 为空）只当普通点击，落到下面的行级分支。
-    const chipEl = (event.target as HTMLElement).closest<HTMLElement>('[data-word-chip]')
     if (chipEl !== null && pressedLayout?.mode === 'word' && !isDegraded) {
       const chipTimeMs = chipEl.dataset.chipTimeMs ?? ''
       if (chipTimeMs !== '') {
-        const wordIndices = (chipEl.dataset.chipIndices ?? '')
-          .split(',')
-          .map((value) => Number.parseInt(value, 10))
-          .filter((value) => Number.isInteger(value))
-        if (wordIndices.length > 0) {
+        if (chipIndices.length > 0) {
+          const wordIndices = chipIndices
           dragRef.current = {
             pointerId: event.pointerId,
             pressedLineId,
@@ -704,7 +745,7 @@ export function LyricTrack() {
     if (session.mode === 'click') return
     const rawPx = event.clientX - session.startClientX
     // 行首拖动：块左缘跟随指针、宽度反向补偿，内层 word 容器反向位移把字卡钉在屏上。
-    // 位移夹到「时间 ≥ 0」的下界；不吸附、不写 store。
+    // 位移夹到「时间 ≥ 0」的下界；几何与辅助线一律用吸附后的 offsetPx（预览 = 落点）。
     if (session.mode === 'line-start') {
       const minDx = -session.pressedStartMs * snapshot.pixelsPerMs
       const dx = Math.max(rawPx, minDx)
@@ -712,16 +753,17 @@ export function LyricTrack() {
         if (Math.abs(dx) < DRAG_THRESHOLD_PX) return
         session.dragging = true
       }
+      const { offsetPx, snappedMs } = calculateSnapAndOffset(dx, session)
       const el = session.nodes.get(session.pressedLineId)
       if (el !== undefined) {
-        el.style.left = `${session.pressedStartMs * snapshot.pixelsPerMs + dx}px`
+        el.style.left = `${session.pressedStartMs * snapshot.pixelsPerMs + offsetPx}px`
         const baseWidth = session.pressedWidthPx ?? el.getBoundingClientRect().width
-        el.style.width = `${Math.max(0, baseWidth - dx)}px`
+        el.style.width = `${Math.max(0, baseWidth - offsetPx)}px`
       }
       if (session.lineStartInner !== undefined && session.lineStartInner !== null) {
-        session.lineStartInner.style.transform = `translate3d(${-dx}px, 0, 0)`
+        session.lineStartInner.style.transform = `translate3d(${-offsetPx}px, 0, 0)`
       }
-      showGuide(session.pressedStartMs + dx / snapshot.pixelsPerMs)
+      showGuide(snappedMs ?? session.pressedStartMs + offsetPx / snapshot.pixelsPerMs)
       return
     }
     // 字级拖动：只挪被按的那张字卡，不吸附、不参与行级位移
@@ -831,17 +873,18 @@ export function LyricTrack() {
     }
 
     // 行首拖动：落一条 absolute，同时写行级与被越过的字级（推土机）。
-    // 位移夹到「时间 ≥ 0」；|deltaMs| < 10 视为点击，不写日志。
+    // 位移夹到「时间 ≥ 0」；落点取吸附结果（与 move 预览同口径），|Δ| < 10 视为点击。
     if (session.mode === 'line-start') {
       const minDx = -session.pressedStartMs * snapshot.pixelsPerMs
-      const dx = Math.max(event.clientX - session.startClientX, minDx)
-      const deltaMs = Math.round(dx / snapshot.pixelsPerMs)
+      const rawDx = Math.max(event.clientX - session.startClientX, minDx)
+      const { offsetPx, snappedMs } = calculateSnapAndOffset(rawDx, session)
+      const targetMs =
+        snappedMs ?? session.pressedStartMs + Math.round(offsetPx / snapshot.pixelsPerMs)
       clearSessionStyles(session)
-      if (Math.abs(deltaMs) < DRAG_MIN_DELTA_MS) {
+      if (Math.abs(targetMs - session.pressedStartMs) < DRAG_MIN_DELTA_MS) {
         handleSelectBlock(session.pressedLineId, session.modifiers)
         return
       }
-      const targetMs = session.pressedStartMs + deltaMs
       if (targetMs < 0) {
         showToast('行首时间不能为负')
         return
@@ -853,6 +896,24 @@ export function LyricTrack() {
     // 未越阈值 = 一次点击：按点选语义派发（无修饰键时即普通单选，保零.3）
     if (!session.dragging) {
       clearSessionStyles(session)
+      // 点行体（非字卡）且未按修饰键：字级游标落到该行首字；该行没有切分则清空游标。
+      // 指针捕获会把 event.target 重定向到平面容器，故用坐标反查真实命中元素。
+      const hit = window.document.elementFromPoint(event.clientX, event.clientY)
+      const onWordCard = hit !== null && hit.closest('[data-word-chip], [data-word-strip]') !== null
+      const plainClick =
+        !session.modifiers.ctrl && !session.modifiers.meta && !session.modifiers.shift && !event.altKey
+      if (!onWordCard && plainClick) {
+        const pressedLayout = laidOutRef.current.find(
+          (item) => item.row.line.id === session.pressedLineId,
+        )
+        if (pressedLayout !== undefined) {
+          if (pressedLayout.row.line.wordTimestamps.length > 0) {
+            setWordCursor(session.pressedLineId, 0)
+          } else {
+            setWordCursor(null)
+          }
+        }
+      }
       handleSelectBlock(session.pressedLineId, session.modifiers)
       return
     }
@@ -949,6 +1010,40 @@ export function LyricTrack() {
 
   useTimelineFrame(kernel, handleFrame)
 
+  /**
+   * 字卡条死区跟随滚动。
+   *
+   * 游标只在触碰容器左右 25% 边缘时才滚动字卡条，中间 50% 是死区（条不动）；
+   * 容器本身没有溢出时绝不滚动。滚动只作用于这个 DOM 容器，
+   * **不碰时间轴视口**（打轴时字卡飞出屏幕是合理预期，视口不跟随）。
+   */
+  useEffect(() => {
+    if (wordCursor === null) return
+    const plane = planeRef.current
+    if (plane === null) return
+    let strip: HTMLElement | null = null
+    for (const block of Array.from(plane.querySelectorAll<HTMLElement>('[data-lyric-block]'))) {
+      if (block.dataset.lineId === wordCursor.lineId) {
+        strip = block.querySelector<HTMLElement>('[data-word-strip-scroll]')
+        break
+      }
+    }
+    if (strip === null) return
+    const chip = strip.querySelector<HTMLElement>('[data-word-cursor]')
+    if (chip === null) return
+    // 没溢出就绝对不滚
+    if (strip.scrollWidth <= strip.clientWidth) return
+    const width = strip.clientWidth
+    // 子项与容器同为 static，offsetParent 一致，相减得到「游标在条内容坐标里的左缘」
+    const left = chip.offsetLeft - strip.offsetLeft
+    const right = left + chip.offsetWidth
+    if (left < strip.scrollLeft + width * 0.25) {
+      strip.scrollTo({ left: left - width * 0.25, behavior: 'smooth' })
+    } else if (right > strip.scrollLeft + width * 0.75) {
+      strip.scrollTo({ left: right - width * 0.75, behavior: 'smooth' })
+    }
+  }, [wordCursor])
+
   return (
     <div
       className="relative shrink-0 overflow-hidden border-t border-divider bg-canvas"
@@ -999,6 +1094,11 @@ export function LyricTrack() {
             chips={item.row.chips}
             wordChips={item.wordChips}
             isDegraded={item.isDegraded}
+            cursorWordIndex={
+              wordCursor !== null && wordCursor.lineId === item.row.line.id
+                ? wordCursor.wordIndex
+                : null
+            }
           />
         ))}
       </div>

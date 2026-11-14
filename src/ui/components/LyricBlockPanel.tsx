@@ -252,7 +252,7 @@ export function LyricBlockPanel() {
                     </span>
                     <span className="w-20 shrink-0 pt-0.5 font-mono text-[11px] text-neutral-400">
                       {times.length === 0 ? (
-                        <span className="block">--:--.--</span>
+                        <span className="block">--:--.---</span>
                       ) : (
                         times.map((timeMs, timeIndex) => (
                           <span key={`${line.id}-t${timeIndex}`} className="block">

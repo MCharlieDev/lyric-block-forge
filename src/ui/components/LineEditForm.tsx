@@ -346,7 +346,11 @@ export function LineEditForm({ line, items, onClose, onDirtyChange }: LineEditFo
       const { lineConsequence } = needsConfirm()
       // 设置为「仅 toast」：不挡保存，后果照样发生，只提示一次
       if (lineConsequence && !confirmClearLineTime) {
-        showToast('已清空行级时间，字级时间将一并清空')
+        showToast(
+          cutDraft !== null
+            ? '已清空行级时间，字级时间将一并清空，当前切分草案将无法保存'
+            : '已清空行级时间，字级时间将一并清空',
+        )
       } else if (lineConsequence) {
         setConfirmKind('line')
         return

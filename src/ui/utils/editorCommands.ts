@@ -1,4 +1,5 @@
 import type { AdapterContext } from '@adapters'
+import { getReplayedWordTime } from '@core'
 import { lineIsMovable, selectVisibleLines, useEditorStore } from '../stores/editorStore'
 import { showToast } from '../stores/toastStore'
 
@@ -180,6 +181,58 @@ export function stampActiveLine(adapters: AdapterContext): void {
 }
 
 /**
+ * 空格打轴（游标分派）。
+ *
+ * 底层只有一套「文本流游标」逻辑，**与缩放 / 卡片形态无关**：
+ * - 当前行**没有**字级数据 → 完全走 {@link stampActiveLine}（打行级 + 跳下一可见行）；
+ * - 当前行**有**字级数据 → 给游标所在的字打轴：
+ *   - 游标为空 / 不属于本行 / 越界 → 从首字开始；
+ *   - 打到本行最后一个字后，游标被清空，这里顺延到下一可见行：
+ *     下一行有字级 → 游标落其首字；无字级 → 保持清空（下一拍按行打）。
+ *
+ * 时间同样取 {@link resolvePlayheadMs}（音频时钟优先）。
+ *
+ * @param adapters 平台能力集合
+ */
+export function stampAtCursor(adapters: AdapterContext): void {
+  const store = useEditorStore.getState()
+  const visible = selectVisibleLines(store.document, store.replay)
+  if (visible.length === 0) return
+
+  const activeId = store.selection.activeLineId
+  // 无选中 / 选中行已不可见：静默返回（与 stampActiveLine 同口径）
+  if (activeId === null) return
+  const activeIndex = visible.findIndex((line) => line.id === activeId)
+  if (activeIndex === -1) return
+
+  const line = visible[activeIndex]
+  if (line.wordTimestamps.length === 0) {
+    stampActiveLine(adapters)
+    return
+  }
+
+  const wordCount = line.wordTimestamps.length
+  const cursor = store.wordCursor
+  const wordIndex =
+    cursor !== null && cursor.lineId === activeId && cursor.wordIndex < wordCount
+      ? cursor.wordIndex
+      : 0
+  if (cursor === null || cursor.lineId !== activeId || cursor.wordIndex !== wordIndex) {
+    store.setWordCursor(activeId, wordIndex)
+  }
+
+  store.stampWordAt(activeId, wordIndex, resolvePlayheadMs(adapters))
+
+  // 游标仍在本行 = 还有下一个字；为 null = 刚打完本行末字，顺延到下一可见行
+  const after = useEditorStore.getState()
+  if (after.wordCursor !== null) return
+  const next = visible[activeIndex + 1]
+  if (next === undefined) return
+  after.selectLine(next.id)
+  if (next.wordTimestamps.length > 0) after.setWordCursor(next.id, 0)
+}
+
+/**
  * 方向键微调的步长（毫秒）。
  *
  * 刻意**不进 `DEFAULT_HOTKEYS`**：那张表管"按哪个键"，
@@ -224,12 +277,35 @@ export function moveSelection(
   const currentIndex = activeId === null ? -1 : visible.findIndex((line) => line.id === activeId)
   if (currentIndex === -1) {
     commit(first.id)
+    // 进入文档：目标行有字级就落在首字，否则保持整行（游标必须清空，避免残留旧行）
+    if (first.wordTimestamps.length > 0) store.setWordCursor(first.id, 0)
+    else store.setWordCursor(null)
     return
+  }
+
+  // 字级游标：同一套文本流里先走字，走到本行边界才换行。
+  // 判断只看「游标是否存在且属于当前行」，与缩放 / 卡片形态完全无关。
+  const currentLine = visible[currentIndex]
+  const wordCount = currentLine.wordTimestamps.length
+  const cursor = store.wordCursor
+  if (wordCount > 0 && cursor !== null && cursor.lineId === activeId) {
+    const wordIndex = Math.min(cursor.wordIndex, wordCount - 1)
+    const nextWordIndex = wordIndex + direction
+    if (nextWordIndex >= 0 && nextWordIndex < wordCount) {
+      store.setWordCursor(activeId, nextWordIndex)
+      return
+    }
   }
 
   const target = visible[currentIndex + direction]
   if (target === undefined) return
   commit(target.id)
+  // 光标与选中同步后，游标跟着落点行：有字级 → 进入方向的端字；无字级 → 清空（整行打轴）
+  if (target.wordTimestamps.length > 0) {
+    store.setWordCursor(target.id, direction === 1 ? 0 : target.wordTimestamps.length - 1)
+  } else {
+    store.setWordCursor(null)
+  }
 }
 
 /**
@@ -315,6 +391,19 @@ export function toggleCursorSelection(): void {
  */
 export function nudgeSelection(deltaMs: number): void {
   const store = useEditorStore.getState()
+
+  // 字级优先：单选（≤1 行）且游标落在 activeLine、该字已有实际时间 → 只微调这一个字。
+  // 多选行或无游标时保持原有行级口径。
+  const cursor = store.wordCursor
+  if (
+    cursor !== null &&
+    store.selection.lineIds.length <= 1 &&
+    cursor.lineId === store.selection.activeLineId &&
+    getReplayedWordTime(store.replay, cursor.lineId, cursor.wordIndex) !== null
+  ) {
+    store.nudgeWordsByOffset(cursor.lineId, [cursor.wordIndex], deltaMs)
+    return
+  }
 
   // 集合级判定（选中集 ≥ 1 行）—— 只要有一行不可平移（未打轴 / 已删）→ 整组拒绝（静默返回）。
   // "可平移"统一走 lineIsMovable（三处共用一个定义，入口层不各写一遍）。
