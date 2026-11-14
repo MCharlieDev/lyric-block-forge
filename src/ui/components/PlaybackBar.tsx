@@ -81,7 +81,7 @@ export function PlaybackBar() {
         onClick={() => togglePlayback(adapters)}
         disabled={!hasAudio}
         title="播放/暂停（E）"
-        className="w-20 rounded border border-divider px-3 py-1 text-xs text-neutral-200 enabled:hover:border-accent/60 enabled:hover:text-accent disabled:opacity-40"
+        className="w-20 shrink-0 rounded border border-divider px-3 py-1 text-xs text-neutral-200 enabled:hover:border-accent/60 enabled:hover:text-accent disabled:opacity-40"
       >
         {playback.isPlaying ? '暂停' : '播放'}
       </button>
@@ -90,7 +90,7 @@ export function PlaybackBar() {
         type="button"
         onClick={() => stampActiveLine(adapters)}
         title="打轴（空格）"
-        className="w-20 rounded border border-divider px-3 py-1 text-xs text-neutral-200 hover:border-accent/60 hover:text-accent"
+        className="w-20 shrink-0 rounded border border-divider px-3 py-1 text-xs text-neutral-200 hover:border-accent/60 hover:text-accent"
       >
         打轴
       </button>
@@ -146,7 +146,9 @@ export function PlaybackBar() {
       </label>
 
       {hasAudio ? (
-        <span className="shrink-0 truncate text-[11px] text-neutral-500">{audioAsset.source.name}</span>
+        <span className="min-w-0 max-w-[240px] truncate text-[11px] text-neutral-500" title={audioAsset.source.name}>
+          {audioAsset.source.name}
+        </span>
       ) : (
         <span className="shrink-0 text-[11px] text-amber-400/80">未加载音频</span>
       )}

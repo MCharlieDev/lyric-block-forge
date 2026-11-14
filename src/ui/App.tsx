@@ -231,19 +231,22 @@ export function App() {
   return (
     <div className="flex h-full flex-col bg-canvas text-neutral-200">
       <header className="flex h-11 shrink-0 items-center gap-3 border-b border-divider bg-panel px-4">
-        <h1 className="text-sm font-medium text-neutral-100">LRC 歌词编辑器</h1>
-        <span className="text-[11px] text-neutral-600">|</span>
-        <span className="truncate text-xs text-neutral-300">
+        <h1 className="shrink-0 whitespace-nowrap text-sm font-medium text-neutral-100">LRC 歌词编辑器</h1>
+        <span className="shrink-0 text-[11px] text-neutral-600">|</span>
+        <span
+          className="min-w-0 max-w-[200px] truncate text-xs text-neutral-300"
+          title={`${doc.meta.title ?? '未命名'}${doc.meta.artist ? ` · ${doc.meta.artist}` : ''}`}
+        >
           {doc.meta.title ?? '未命名'}
           {doc.meta.artist ? ` · ${doc.meta.artist}` : ''}
         </span>
-        <span className="text-[11px] text-neutral-600">{visibleLines.length} 行</span>
+        <span className="shrink-0 whitespace-nowrap text-[11px] text-neutral-600">{visibleLines.length} 行</span>
         {/* 音频状态只在未加载时提示：已加载时该信息在播放条与日志里已有，顶栏不重复占位 */}
         {audioAsset === null ? (
-          <span className="text-[11px] text-neutral-600">未加载音频</span>
+          <span className="shrink-0 whitespace-nowrap text-[11px] text-neutral-600">未加载音频</span>
         ) : null}
 
-        <div className="flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {/* 三个入口本质都是"导入文本"，归在一个下拉里，避免顶栏继续横向膨胀 */}
           <div className="relative">
             <button
