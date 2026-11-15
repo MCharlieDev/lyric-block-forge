@@ -62,6 +62,12 @@ export function App() {
   const [pendingKind, setPendingKind] = useState<OperationKind | ''>('')
   const [importMenuOpen, setImportMenuOpen] = useState(false)
   const [manualInputOpen, setManualInputOpen] = useState(false)
+  // 窄屏「⋯」菜单：桌面控件组只是 CSS 隐藏，窄屏入口全部收在这里
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false)
+  // 「导入歌词…」二级区是否展开；每次重新打开 ⋯ 都复位，避免状态残留
+  const [moreImportOpen, setMoreImportOpen] = useState(false)
+  // 窄屏「设置」入口：由 ⋯ 菜单代开，需要受控 SettingsMenu
+  const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
   // 操作成功一律静默（歌词列表与日志面板已有反馈），只有失败才提示；
   // 提示放在右下角浮层且 2 秒后自动消失，不在工具栏常驻任何文字。
   const [errorText, setErrorText] = useState<string | null>(null)
@@ -98,6 +104,16 @@ export function App() {
     const timer = window.setTimeout(() => setErrorText(null), 2000)
     return () => window.clearTimeout(timer)
   }, [errorText])
+
+  // 窄屏 ⋯ 菜单支持 Esc 关闭（遮罩点击与条目点击分别在各自的 onClick 里处理）
+  useEffect(() => {
+    if (!moreMenuOpen) return
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setMoreMenuOpen(false)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [moreMenuOpen])
 
   // 一次性提示同样 2 秒后自动消失
   useEffect(() => {
@@ -227,6 +243,9 @@ export function App() {
     'rounded border border-divider px-2 py-0.5 text-[11px] text-neutral-300 hover:border-accent/60 hover:text-accent'
   const menuItemClass =
     'block w-full px-3 py-1.5 text-left text-[11px] text-neutral-300 hover:bg-white/5 hover:text-accent'
+  /** 窄屏「导入歌词…」二级条目：左缩进区分层级。 */
+  const moreSubItemClass =
+    'block w-full py-1.5 pl-6 pr-3 text-left text-[11px] text-neutral-400 hover:bg-white/5 hover:text-accent'
 
   return (
     <div className="flex h-full flex-col bg-canvas text-neutral-200">
@@ -246,7 +265,8 @@ export function App() {
           <span className="shrink-0 whitespace-nowrap text-[11px] text-neutral-600">未加载音频</span>
         ) : null}
 
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        {/* 窄屏下整组隐藏（display:none，DOM 保留），由后方的 ⋯ 菜单代劳 */}
+        <div className="ml-auto hidden shrink-0 items-center gap-2 md:flex">
           {/* 三个入口本质都是"导入文本"，归在一个下拉里，避免顶栏继续横向膨胀 */}
           <div className="relative">
             <button
@@ -314,7 +334,7 @@ export function App() {
           <SettingsMenu />
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto hidden items-center gap-2 md:flex">
           <label className="flex items-center gap-1.5 text-[11px] text-neutral-500">
             分级回退
             <select
@@ -343,6 +363,121 @@ export function App() {
             撤销该类型全部记录
           </button>
           <span className="text-[11px] text-neutral-600">共 {log.entries.length} 条日志</span>
+        </div>
+
+        {/* 窄屏入口：桌面两组控件在 <768px 隐藏，全部收进这个 ⋯ 菜单。
+            菜单条目条件渲染（关闭时不进 DOM），避免与桌面同名文本重复。 */}
+        <div className="relative ml-auto flex shrink-0 items-center md:hidden">
+          <button
+            type="button"
+            title="更多"
+            onClick={() => {
+              setMoreMenuOpen((value) => !value)
+              setMoreImportOpen(false)
+            }}
+            className={`rounded border px-2 py-0.5 text-[11px] ${
+              moreMenuOpen
+                ? 'border-accent/60 text-accent'
+                : 'border-divider text-neutral-300 hover:border-accent/60 hover:text-accent'
+            }`}
+          >
+            ⋯
+          </button>
+
+          {moreMenuOpen ? (
+            <>
+              {/* 点击面板外部关闭 */}
+              <button
+                type="button"
+                aria-label="关闭更多菜单"
+                className="fixed inset-0 z-10 cursor-default"
+                onClick={() => setMoreMenuOpen(false)}
+              />
+              <div className="absolute right-0 top-full z-20 mt-1 w-48 rounded border border-divider bg-panel py-1 shadow-lg">
+                {/* 导入三入口做成二级展开，避免面板过长 */}
+                <button
+                  type="button"
+                  className={`${menuItemClass} flex items-center justify-between`}
+                  onClick={() => setMoreImportOpen((value) => !value)}
+                >
+                  导入歌词…
+                  <span className="text-neutral-500">{moreImportOpen ? '▾' : '▸'}</span>
+                </button>
+                {moreImportOpen ? (
+                  <div className="border-y border-divider py-1">
+                    <button
+                      type="button"
+                      className={moreSubItemClass}
+                      onClick={() => {
+                        setMoreMenuOpen(false)
+                        void handleImportLrc()
+                      }}
+                    >
+                      导入 LRC / 文本 / Word
+                    </button>
+                    <button
+                      type="button"
+                      className={moreSubItemClass}
+                      onClick={() => {
+                        setMoreMenuOpen(false)
+                        void handleImportFromClipboard()
+                      }}
+                    >
+                      从剪贴板导入
+                    </button>
+                    <button
+                      type="button"
+                      className={moreSubItemClass}
+                      onClick={() => {
+                        setMoreMenuOpen(false)
+                        setManualInputOpen(true)
+                      }}
+                    >
+                      手动输入
+                    </button>
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  className={menuItemClass}
+                  onClick={() => {
+                    setMoreMenuOpen(false)
+                    void handleExportLrc()
+                  }}
+                >
+                  导出 LRC
+                </button>
+                <button
+                  type="button"
+                  className={menuItemClass}
+                  onClick={() => {
+                    setMoreMenuOpen(false)
+                    void handleImportAudio()
+                  }}
+                >
+                  导入音频
+                </button>
+                <button
+                  type="button"
+                  className={menuItemClass}
+                  onClick={() => {
+                    setMoreMenuOpen(false)
+                    setMobileSettingsOpen(true)
+                  }}
+                >
+                  设置
+                </button>
+              </div>
+            </>
+          ) : null}
+
+          {/* 隐藏自带触发按钮，由上方「设置」条目受控打开；面板右对齐防止窄屏溢出 */}
+          <SettingsMenu
+            open={mobileSettingsOpen}
+            onOpenChange={setMobileSettingsOpen}
+            hideTrigger
+            panelAlign="right"
+          />
         </div>
       </header>
 

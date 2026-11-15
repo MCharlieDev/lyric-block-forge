@@ -905,6 +905,11 @@ async function waitReady(cdp) {
 }
 
 async function reset(cdp) {
+  // 视口基准必须每次重置：BN 组会临时模拟 375×667 手机视口，
+  // 若异常中断未恢复，会静默影响后续所有组（左右面板是否渲染）。
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: 1280, height: 900, deviceScaleFactor: 1, mobile: false,
+  })
   const loaded = cdp.waitEvent('Page.loadEventFired').catch(() => {})
   await cdp.send('Page.navigate', { url: APP + '?run=' + Date.now() })
   await loaded
@@ -4527,6 +4532,178 @@ async function testBM(cdp, checks) {
   )
 }
 
+/**
+ * BN：窄屏结构（375×667）
+ *
+ * 只断言「结构存在性与相对位置」，不断言任何交互——375px 下播放条控件仍横向
+ * 溢出，坐标点击不可靠（控件压缩留给 2c-2）。断言口径：
+ * - 活动栏不渲染（`title="工作日志"` 消失）
+ * - 布局 `footer` 内不再有播放条（播放条已移入主内容列）
+ * - 全页仅一个 `[data-volume-control]`（防 CSS 双份渲染）
+ * - 播放条在歌词列表之上（波形下方、列表上方）
+ */
+async function testBN(cdp, checks) {
+  const NARROW = { width: 375, height: 667, deviceScaleFactor: 1, mobile: true }
+  const DESKTOP = { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }
+
+  // 窄屏 ⋯ 菜单里的四个入口文案。桌面控件组在窄屏只是 display:none、DOM 仍在，
+  // 所以这里区分 `visible`（有渲染盒）与 `all`（DOM 中存在），
+  // 断言「关闭时不可见」+「菜单专属文案完全不在 DOM」两件事。
+  const MORE_TEXTS = ['导入歌词…', '导出 LRC', '导入音频', '设置']
+  // 用前缀匹配而不是全等：「导入歌词…」按钮里还含一个 ▸/▾ 箭头 span，
+  // 全等匹配会永久命中不到，导致「关闭时不在 DOM」这条断言空转。
+  const scanMoreEntries = `(function(){
+      var texts = ${JSON.stringify(MORE_TEXTS)};
+      var buttons = document.querySelectorAll('button');
+      var visible = [];
+      var all = [];
+      for (var i = 0; i < buttons.length; i++) {
+        var t = (buttons[i].textContent || '').trim();
+        var hit = false;
+        for (var k = 0; k < texts.length; k++) {
+          if (t.indexOf(texts[k]) === 0) { hit = true; break; }
+        }
+        if (!hit) continue;
+        all.push(t);
+        if (buttons[i].getClientRects().length > 0) visible.push(t);
+      }
+      return { visible: visible, all: all };
+    })()`
+
+  try {
+    await cdp.send('Emulation.setDeviceMetricsOverride', NARROW)
+    // 等 matchMedia change → React 重渲染 → ResizeObserver 完成一次 fit
+    await sleep(250)
+
+    const narrow = await ev(
+      cdp,
+      `(function(){
+        var vols = document.querySelectorAll('[data-volume-control]');
+        var footers = document.querySelectorAll('footer');
+        var inFooter = 0;
+        for (var i = 0; i < footers.length; i++) {
+          if (footers[i].querySelector('[data-volume-control]')) inFooter++;
+        }
+        var h2s = document.querySelectorAll('h2');
+        var lyric = null;
+        for (var j = 0; j < h2s.length; j++) {
+          if ((h2s[j].textContent || '').trim() === '歌词块') {
+            // PanelFrame 根节点是 div，其 header 是直接子节点：header 的父节点即面板根
+            lyric = h2s[j].closest('header').parentElement;
+            break;
+          }
+        }
+        var volRect = vols.length ? __lrc._rectOf(vols[0]) : null;
+        var lyricRect = lyric ? __lrc._rectOf(lyric) : null;
+        return {
+          innerWidth: window.innerWidth,
+          activityBar: document.querySelector('[title="工作日志"]') !== null,
+          footerWithVolume: inFooter,
+          volCount: vols.length,
+          volTop: volRect ? volRect.top : null,
+          lyricTop: lyricRect ? lyricRect.top : null
+        };
+      })()`,
+    )
+
+    // 注：375px 下播放条内部控件仍横向溢出（2c-2 才修），移动端模拟会触发
+    // shrink-to-fit，`window.innerWidth` 报的是撑开后的 layout viewport（约 738），
+    // 因此这里只断言「落在窄屏区间」，不断言精确 375。
+    assert(checks, 'BN.a 视口切到窄屏（layout viewport ≤ 767）', narrow.innerWidth <= 767, J(narrow))
+    assert(checks, 'BN.b 窄屏不渲染活动栏', narrow.activityBar === false, J(narrow.activityBar))
+    assert(checks, 'BN.c 布局页脚内没有播放条', narrow.footerWithVolume === 0, J(narrow.footerWithVolume))
+    assert(checks, 'BN.d 播放条单实例（未双份渲染）', narrow.volCount === 1, J(narrow.volCount))
+    assert(
+      checks,
+      'BN.e 播放条位于歌词列表上方',
+      narrow.volTop !== null && narrow.lyricTop !== null && narrow.volTop < narrow.lyricTop,
+      J({ volTop: narrow.volTop, lyricTop: narrow.lyricTop }),
+    )
+
+    // 3b：顶栏折叠的回归锁。桌面控件组改为 display:none 后，375px 不再触发
+    // shrink-to-fit（3a 前实测为 738），这里留 5px 容差避免不同 Chromium
+    // 版本的亚像素差异导致假红；BN.a 的 `<= 767` 保持原样不动。
+    assert(checks, 'BN.g 窄屏 layout viewport 未被内容撑宽（innerWidth ≤ 380）', narrow.innerWidth <= 380, J(narrow.innerWidth))
+
+    const closedEntries = await ev(cdp, scanMoreEntries)
+    assert(
+      checks,
+      'BN.h ⋯ 菜单关闭时四个入口均不可见',
+      closedEntries.visible.length === 0,
+      J(closedEntries),
+    )
+    assert(
+      checks,
+      'BN.h.2 菜单专属文案「导入歌词…」关闭时不在 DOM',
+      closedEntries.all.indexOf('导入歌词…') < 0,
+      J(closedEntries.all),
+    )
+
+    // 点 ⋯ 开菜单 → 断言入口出现 → Esc 关闭 → 断言入口消失。
+    // 用 title 选择器而不是文本匹配，避免与「⋯」这类非 ASCII 文案互相牵扯。
+    const clickMore = await ev(
+      cdp,
+      `(function(){
+        var btn = document.querySelector('[title="更多"]');
+        if (btn === null) return { clicked: false };
+        btn.click();
+        return { clicked: true };
+      })()`,
+    )
+    await sleep(150)
+    const openedEntries = await ev(cdp, scanMoreEntries)
+    assert(
+      checks,
+      'BN.i 点 ⋯ 后菜单展开（入口可见）',
+      clickMore.clicked === true && openedEntries.visible.length > 0,
+      J({ clickMore, openedEntries }),
+    )
+
+    await keyPress(cdp, 'Escape', 'Escape', 27)
+    await sleep(150)
+    const escapedEntries = await ev(cdp, scanMoreEntries)
+    assert(
+      checks,
+      'BN.j 按 Esc 后菜单关闭（入口不再可见）',
+      escapedEntries.visible.length === 0 && escapedEntries.all.indexOf('导入歌词…') < 0,
+      J(escapedEntries),
+    )
+  } finally {
+    // 断言失败 / 抛错也必须还原桌面视口，否则后续组全部跑在手机视口里
+    await cdp.send('Emulation.setDeviceMetricsOverride', DESKTOP)
+    await sleep(100)
+    const back = await ev(
+      cdp,
+      `(function(){
+        var vols = document.querySelectorAll('[data-volume-control]');
+        var footers = document.querySelectorAll('footer');
+        var bar = null;
+        for (var i = 0; i < footers.length; i++) {
+          if (footers[i].querySelector('[data-volume-control]')) { bar = footers[i]; break; }
+        }
+        // 量页脚容器而不是音量控件本身：音量 label 在 56px 高条内垂直居中，
+        // 其 bottom 天然离视口底还有一截，不能代表播放条位置
+        var r = bar ? __lrc._rectOf(bar) : null;
+        return {
+          count: vols.length,
+          hasFooterBar: bar !== null,
+          bottom: r ? r.bottom : null,
+          innerHeight: window.innerHeight
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BN.f 恢复桌面视口后播放条回到页面底部',
+      back.count === 1 &&
+        back.hasFooterBar === true &&
+        back.bottom !== null &&
+        Math.abs(back.innerHeight - back.bottom) <= 20,
+      J(back),
+    )
+  }
+}
+
 const TESTS = [
   ['A', '多选拖动 → 一条 selection-offset 整组等量位移', testA],
   ['B', '拖动中零 store 写入', testB],
@@ -4594,6 +4771,7 @@ const TESTS = [
   ['BK', '点行落游标 / 左右键字级微调 / 字卡条死区跟随滚动', testBK],
   ['BL', '行首拖动接吸附：吸本行首字不推平 / 关吸附越过首字推平', testBL],
   ['BM', 'Word 导入接线：菜单项可点、隐藏 input 的 accept 含 .docx', testBM],
+  ['BN', '窄屏结构：隐藏活动栏 / 播放条入主内容列 / 单实例 / 顶栏折叠回归锁 / 恢复桌面视口', testBN],
 ]
 
 async function main() {

@@ -37,9 +37,23 @@ import { RightSidebar } from './RightSidebar'
  */
 const WIDE_VIEWPORT_QUERY = '(min-width: 1100px)'
 
+/**
+ * 窄视口查询：命中时整页按移动端结构渲染——隐藏活动栏与右侧面板，
+ * 并把播放条移入主内容列（波形下方、歌词列表上方），把屏幕最底部让出来。
+ *
+ * 与 `WIDE_VIEWPORT_QUERY` 是两个独立闸门：前者管「右栏开合」，
+ * 本项管「结构是否切换成移动端」，互不覆盖。
+ */
+const NARROW_VIEWPORT_QUERY = '(max-width: 767px)'
+
 export function ThreeColumnLayout() {
   const [isCollapsed, setIsCollapsed] = useState(
     () => !window.matchMedia(WIDE_VIEWPORT_QUERY).matches,
+  )
+  // 窄视口：结构切换（播放条入列 + 隐藏活动栏）。只决定渲染与否，
+  // 不做 CSS 双份渲染，避免 `[data-volume-control]` 重名。
+  const [isNarrow, setIsNarrow] = useState(
+    () => window.matchMedia(NARROW_VIEWPORT_QUERY).matches,
   )
   // 用户手动开合过之后，断点变化不再接管状态
   const userToggledRef = useRef(false)
@@ -51,6 +65,14 @@ export function ThreeColumnLayout() {
       if (userToggledRef.current) return
       setIsCollapsed(!event.matches)
     }
+    query.addEventListener('change', handleChange)
+    return () => query.removeEventListener('change', handleChange)
+  }, [])
+
+  // 窄视口闸门：跟随断点变化切换结构（播放条入列 / 隐藏活动栏）
+  useEffect(() => {
+    const query = window.matchMedia(NARROW_VIEWPORT_QUERY)
+    const handleChange = (event: MediaQueryListEvent): void => setIsNarrow(event.matches)
     query.addEventListener('change', handleChange)
     return () => query.removeEventListener('change', handleChange)
   }, [])
@@ -68,23 +90,29 @@ export function ThreeColumnLayout() {
       <div className="flex min-h-0 min-w-0 flex-1 gap-3">
         {sidebarPosition === 'left' ? (
           <>
-            <ActivityBar side="left" isPanelOpen={!isCollapsed} onToggle={handleToggle} />
-            {!isCollapsed && <RightSidebar />}
-            <LeftColumn />
+            {!isNarrow && (
+              <ActivityBar side="left" isPanelOpen={!isCollapsed} onToggle={handleToggle} />
+            )}
+            {!isNarrow && !isCollapsed && <RightSidebar />}
+            <LeftColumn showPlaybackBar={isNarrow} />
           </>
         ) : (
           <>
-            <LeftColumn />
-            {!isCollapsed && <RightSidebar />}
-            <ActivityBar side="right" isPanelOpen={!isCollapsed} onToggle={handleToggle} />
+            <LeftColumn showPlaybackBar={isNarrow} />
+            {!isNarrow && !isCollapsed && <RightSidebar />}
+            {!isNarrow && (
+              <ActivityBar side="right" isPanelOpen={!isCollapsed} onToggle={handleToggle} />
+            )}
           </>
         )}
       </div>
 
-      {/* 底部：播放控制，位于最外层 padding 之内 */}
-      <footer className="shrink-0">
-        <PlaybackBar />
-      </footer>
+      {/* 底部：播放控制，位于最外层 padding 之内；窄视口时改由 LeftColumn 内部渲染 */}
+      {!isNarrow && (
+        <footer className="shrink-0">
+          <PlaybackBar />
+        </footer>
+      )}
     </div>
   )
 }

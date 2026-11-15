@@ -420,20 +420,44 @@ const SECTIONS: SettingsSection[] = [
   },
 ]
 
+/** `SettingsMenu` 的可选受控属性；全部不传即为原有的自管模式（桌面端用法）。 */
+export interface SettingsMenuProps {
+  /** 受控开合状态；传入后组件不再自管，开合完全由父级决定。 */
+  open?: boolean
+  /** 受控模式下的开合变更回调（点击遮罩、点触发按钮都会调用）。 */
+  onOpenChange?: (open: boolean) => void
+  /** 不渲染顶栏「设置」触发按钮，便于窄屏由 ⋯ 菜单代开。 */
+  hideTrigger?: boolean
+  /** 面板对齐方向；窄屏用 right 贴右边缘，避免 w-72 面板向左溢出屏幕。 */
+  panelAlign?: 'left' | 'right'
+}
+
 /**
- * 导入预设菜单。
+ * 设置面板入口。
  *
  * 承载导入解析（双语识别）、界面、导出精度与时间轴相关设置，
  * 修改即时写入设置存储。面板顶部为常驻搜索框、底部为常驻操作栏（恢复默认），
  * 只有中间内容区滚动，保证这两处始终可见。
  */
-export function SettingsMenu() {
+export function SettingsMenu({
+  open: controlledOpen,
+  onOpenChange,
+  hideTrigger = false,
+  panelAlign = 'left',
+}: SettingsMenuProps = {}) {
   const settings = useSettingsStore((state) => state.settings)
   const update = useSettingsStore((state) => state.update)
   const reset = useSettingsStore((state) => state.reset)
-  const [open, setOpen] = useState(false)
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [prefixDialogOpen, setPrefixDialogOpen] = useState(false)
+
+  const controlled = controlledOpen !== undefined
+  const open = controlled ? controlledOpen : uncontrolledOpen
+  const setOpen = (next: boolean): void => {
+    if (!controlled) setUncontrolledOpen(next)
+    onOpenChange?.(next)
+  }
 
   const q = query.trim().toLowerCase()
   // 搜索过滤：段标题命中则整段保留，否则按「项标签 + 关键词」逐项过滤；空段跳过
@@ -454,15 +478,17 @@ export function SettingsMenu() {
 
   return (
     <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className={`rounded border px-2 py-0.5 text-[11px] ${
-          open ? 'border-accent/60 text-accent' : 'border-divider text-neutral-300 hover:border-accent/60 hover:text-accent'
-        }`}
-      >
-        设置
-      </button>
+      {hideTrigger ? null : (
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className={`rounded border px-2 py-0.5 text-[11px] ${
+            open ? 'border-accent/60 text-accent' : 'border-divider text-neutral-300 hover:border-accent/60 hover:text-accent'
+          }`}
+        >
+          设置
+        </button>
+      )}
 
       {open ? (
         <>
@@ -475,7 +501,9 @@ export function SettingsMenu() {
           />
           <div
             data-settings-panel
-            className="absolute left-0 top-full z-20 mt-1 flex w-72 flex-col rounded border border-divider bg-panel shadow-lg"
+            className={`absolute top-full z-20 mt-1 flex w-72 flex-col rounded border border-divider bg-panel shadow-lg ${
+              panelAlign === 'right' ? 'right-0' : 'left-0'
+            }`}
             style={{ height: SETTINGS_PANEL_HEIGHT_PX, maxHeight: '70vh' }}
           >
             {/* 顶部：常驻搜索框，不随内容滚动 */}

@@ -75,13 +75,13 @@ export function PlaybackBar() {
   }
 
   return (
-    <div className="flex h-14 shrink-0 items-center gap-4 border-t border-divider bg-panel px-4">
+    <div className="flex h-10 shrink-0 items-center gap-2 overflow-hidden rounded-lg border border-divider bg-panel px-4 md:h-14 md:gap-4">
       <button
         type="button"
         onClick={() => togglePlayback(adapters)}
         disabled={!hasAudio}
         title="播放/暂停（E）"
-        className="w-20 shrink-0 rounded border border-divider px-3 py-1 text-xs text-neutral-200 enabled:hover:border-accent/60 enabled:hover:text-accent disabled:opacity-40"
+        className="w-16 shrink-0 rounded border border-divider px-3 py-1 text-xs text-neutral-200 enabled:hover:border-accent/60 enabled:hover:text-accent disabled:opacity-40 md:w-20"
       >
         {playback.isPlaying ? '暂停' : '播放'}
       </button>
@@ -90,14 +90,14 @@ export function PlaybackBar() {
         type="button"
         onClick={() => stampActiveLine(adapters)}
         title="打轴（空格）"
-        className="w-20 shrink-0 rounded border border-divider px-3 py-1 text-xs text-neutral-200 hover:border-accent/60 hover:text-accent"
+        className="w-16 shrink-0 rounded border border-divider px-3 py-1 text-xs text-neutral-200 hover:border-accent/60 hover:text-accent md:w-20"
       >
         打轴
       </button>
 
-      <span className="w-40 shrink-0 font-mono text-xs text-neutral-400">
+      <span className="w-[90px] shrink-0 font-mono text-[11px] text-neutral-400 md:w-40 md:text-xs">
         {formatDuration(playback.playheadMs)}
-        <span className="text-neutral-600"> / {hasAudio ? formatDuration(durationMs) : '--:--.---'}</span>
+        <span className="hidden text-neutral-600 md:inline"> / {hasAudio ? formatDuration(durationMs) : '--:--.---'}</span>
       </span>
 
       <input
@@ -112,7 +112,7 @@ export function PlaybackBar() {
         aria-label="播放进度"
       />
 
-      <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-neutral-500">
+      <label className="hidden shrink-0 items-center gap-1.5 text-[11px] text-neutral-500 md:flex">
         速率
         <select
           value={playback.rate}
@@ -130,7 +130,7 @@ export function PlaybackBar() {
       <label
         ref={volumeLabelRef}
         data-volume-control
-        className="flex shrink-0 items-center gap-1.5 text-[11px] text-neutral-500"
+        className="hidden shrink-0 items-center gap-1.5 text-[11px] text-neutral-500 md:flex"
       >
         音量
         <input
@@ -146,11 +146,11 @@ export function PlaybackBar() {
       </label>
 
       {hasAudio ? (
-        <span className="min-w-0 max-w-[240px] truncate text-[11px] text-neutral-500" title={audioAsset.source.name}>
+        <span className="hidden min-w-0 max-w-[240px] truncate text-[11px] text-neutral-500 md:block" title={audioAsset.source.name}>
           {audioAsset.source.name}
         </span>
       ) : (
-        <span className="shrink-0 text-[11px] text-amber-400/80">未加载音频</span>
+        <span className="hidden shrink-0 text-[11px] text-amber-400/80 md:inline">未加载音频</span>
       )}
     </div>
   )

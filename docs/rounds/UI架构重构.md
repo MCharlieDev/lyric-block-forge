@@ -1,8 +1,8 @@
 # UI 架构重构 · 交接文档
 
 > **用途**：记录把主界面布局从「尺寸写死在壳里」重构为「可拆解原语」的过程。配合主交接文档阅读。
-> **状态**：轮 1/3 ✅、轮 2a ✅、轮 2b ✅ 已闭合（轮 2c 窄视口抽屉、轮 3 顶栏/播放条移动端压缩未开始）。
-> **基线**：harness 577/577；core vitest 208/208；tsc 退出码 0。
+> **状态**：轮 1/3 ✅、轮 2a ✅、轮 2b ✅、轮 2c-1 ✅、轮 2c-2 ✅、轮 3a ✅、轮 3b ✅ 已闭合（移动端顶栏与播放条的结构性收口完成；下一轮 = 轮 2d 底部工具栏 / 速率音量入口）。
+> **基线**：harness 588/588；core vitest 208/208；tsc 退出码 0。
 > **上游/依赖**：A 段《UI 架构摸底》核实结论——三个面板是真模块组件，但尺寸策略（`w-80` / `w-9` / `flex-[1.4]` / `min-width:1100px`）全部写死在 `src/ui/layout/ThreeColumnLayout.tsx` 一个文件里，且 `matchMedia` 跨断点会强制覆盖用户手动的展开/收起。
 
 ## 一、本轮范围
@@ -196,6 +196,283 @@
 - **把 `ActivityBar` 的强调条改成 `absolute` 定位以避开 border 拼接**：否决。既有 `border-l-2` / `border-r-2` 已足够，绝对定位会引入层级与定位上下文风险（2a 已否决过同类）。
 - **切换位置时重置 `isCollapsed`**：否决。用户意图是「挪位置」而非「改开合」，重置会让面板突然弹开/收起，与 2a 的尊重用户意图原则相悖。
 - **本轮顺手把 `LeftColumn` 改名为 `MainColumn`**：否决。任务明确要求等 2c / 轮 3 闭环后统一改名，混入 Rename 会让本轮 diff 无法用 `git status` 的 5 文件口径验收。
+
+## 轮次 2c-1：播放条移入主内容区 + 窄屏结构断言
+
+> **用途**：记录窄视口（< 768px）结构切换第一刀——把播放条从布局页脚搬进主内容列、隐藏活动栏，并给 harness 补上移动端结构断言。
+> **状态**：✅ 已闭合。
+> **基线**：harness 583/583（BN 组 6/6、AY 组 9/9）；core vitest 208/208；tsc 退出码 0。
+> **上游/依赖**：轮 2b 挂账里原规划「轮 2c = 窄视口底部抽屉（z-index < 40）」被本轮**推翻**。用户决定优先解决 375px 下播放条占住黄金位且横向溢出的问题，先把播放条移进主内容区；底部抽屉不再实施。A 段核实结论：harness 视口恒 1280×900，`(max-width: 767px)` 永远不命中，移动端分支无任何机器兜底——故本轮必须自带 BN 组。
+
+### 一、本轮范围
+
+窄视口下把 `PlaybackBar` 从 `ThreeColumnLayout` 的 footer 移入 `LeftColumn`（插在 `TimelineStrip` 与 `LyricBlockPanel` 之间），同时隐藏 `ActivityBar` 与 `RightSidebar`，把屏幕最底部让给歌词列表；桌面端渲染路径逐字不变。**不做任何控件压缩**——375px 下播放条内部依然横向溢出，留给 2c-2。
+
+### 二、核心接口与契约变更
+
+- **新增接口**：
+  - `LeftColumnProps.showPlaybackBar?: boolean`（默认 `false`）。用途：由布局层告知主内容列是否要自己渲染播放条，保证全页只渲染一个 `PlaybackBar`。
+  - `ThreeColumnLayout` 内部常量 `NARROW_VIEWPORT_QUERY = '(max-width: 767px)'`（不导出）。用途：窄视口结构闸门，与 `WIDE_VIEWPORT_QUERY`（管右栏开合）相互独立。
+- **修改接口**：
+  - `ThreeColumnLayout` 外部签名不变（仍无 props），`App.tsx` 零改动。新增内部状态 `isNarrow: boolean`（初值 `matchMedia(NARROW_VIEWPORT_QUERY).matches`）。
+  - `PlaybackBar` 无签名变更，仅根节点 className 变化。
+- **数据模型/类型变更**：无（未新增设置项，`AppSettings` 未动）。
+- **DOM 契约（供 harness 依赖）**：
+  - **`[data-volume-control]` 全页恒为 1 个实例**：窄屏由 `LeftColumn` 渲染、宽屏由 footer 渲染，二者互斥。这是本轮最核心契约，AY 组（音量滚轮走真实 CDP 坐标 + `elementAt`）依赖它。
+  - 窄屏下 `button[title="工作日志"]`（ActivityBar）**不渲染**、`footer` 元素**不渲染**。
+  - 宽屏下 `footer > PlaybackBar` 结构与之前一致，仅 `PlaybackBar` 根节点由 `border-t` 改为卡片式边框。
+
+### 三、关键设计与做法
+
+1. **JS 单实例，拒绝 CSS 双份**：不用 `hidden md:block` 之类写法，因为双份渲染会让 DOM 同时存在两个 `[data-volume-control]`，AY 组的真实坐标点击与 `querySelectorAll` 判定全面失准。改为父级按 `isNarrow` 决定由谁渲染，任何时刻只有一个 `PlaybackBar` 挂载。
+2. **两个断点闸门互不覆盖**：`WIDE_VIEWPORT_QUERY`（1100px）只管右栏默认开合且受 `userToggledRef` 单向接管；`NARROW_VIEWPORT_QUERY`（768px）只管结构切换。两者各用独立 `useEffect` 监听，互不读写对方状态。
+3. **高度无写死**：`TimelineStrip` 内部固定栈 160px + `WaveformLayer` 的 `flex-1` 由 ResizeObserver 实测，`LyricBlockPanel` 吃剩余高度，因此中间插入 `h-14` 播放条不会产生高度下限问题——A 段已核实，无需改任何子组件。
+4. **外壳卡片化**：播放条从页脚移入列后不再是「贴底横条」，改为 `rounded-lg border border-divider bg-panel` 与 `TimelineStrip` / `LyricBlockPanel` 的卡片语言一致；`h-14 px-4 shrink-0` 保留，保证桌面端视觉高度不变。
+5. **harness 视口兜底**：`reset(cdp)` 原本不重置视口（只有 `main()` 设一次 1280×900），BN 组临时切到 375×667 若异常中断会静默污染后续所有组的左右面板渲染。本轮在 `reset` 顶部补 `Emulation.setDeviceMetricsOverride(1280×900, mobile:false)`，属于验收必需的基建修复。
+6. **shrink-to-fit 事实**：CDP `mobile:true` + 375px 时，因内容横向溢出，浏览器把 layout viewport 撑到实测 `innerWidth = 738`。故 BN.a 断言为 `<= 767`（证明结构分支命中）而非精确 375，避免锁定浏览器行为细节。
+
+### 四、改动文件清单
+
+| 文件 | 改动内容 | 影响范围/关联模块 |
+| :--- | :--- | :--- |
+| `src/ui/layout/ThreeColumnLayout.tsx` | 新增 `NARROW_VIEWPORT_QUERY` + `isNarrow` 状态 + 独立 `matchMedia` effect；渲染改用 `LeftColumn showPlaybackBar={isNarrow}`、`{!isNarrow && !isCollapsed && <RightSidebar />}`、`{!isNarrow && <ActivityBar … />}`、`{!isNarrow && <footer><PlaybackBar /></footer>}`。 | 窄屏结构切换；桌面路径不变 |
+| `src/ui/layout/LeftColumn.tsx` | 新增 `LeftColumnProps.showPlaybackBar?: boolean`；引入 `PlaybackBar`；在 `TimelineStrip` 与 `LyricBlockPanel` 之间条件渲染。 | 主内容列装配；窄屏播放条宿主 |
+| `src/ui/components/PlaybackBar.tsx` | 仅根节点 className：`border-t border-divider` → `rounded-lg border border-divider bg-panel`（保留 `flex h-14 shrink-0 items-center gap-4 px-4`）。 | 视觉外壳；内部控件与滚轮 effect 零改动 |
+| `harness/run.mjs` | `reset(cdp)` 顶部补 1280×900 视口兜底；TESTS 末尾新增 `testBN`（try/finally，finally 恢复桌面视口 + sleep 100ms，再断回页底）+ BN 组 6 条。 | 测试基建 + 移动端结构断言 |
+
+### 五、验收证据
+
+- **tsc**：`npx tsc -b --noEmit` 退出码 0。
+- **vitest**：208/208，12 文件全过。
+- **harness**：583/583，0 失败（旧 577 + BN 组 6 条）；**AY 组 9/9 通过**（音量滚轮未受单实例改动影响）；BN 组 6/6 通过。
+- **关键断言/实测**：窄屏 `innerWidth = 738 ≤ 767`；`[title="工作日志"]` 为 `null`；含 `[data-volume-control]` 的 footer 计数 0；`[data-volume-control]` 计数 1；`volTop 390.17 < lyricTop 438.42`；恢复桌面后 footer `rect.bottom = 888`，`|900 − 888| = 12 ≤ 20`。`git status --short` 业务文件恰 **4 个**（`ThreeColumnLayout.tsx`、`LeftColumn.tsx`、`PlaybackBar.tsx`、`harness/run.mjs`），`docs/` 归档不计。
+
+### 六、已知取舍与未验证
+
+- **取舍**：
+  - 移动端隐藏 `ActivityBar` 后，手机端**没有日志面板入口**（日志在手机上暂时不可用）。
+  - 375px 下移入 `LeftColumn` 的播放条**内部依然横向溢出**，需 2c-2 解决（本轮刻意不压缩，避免一次改动混两件事）。
+  - 播放条不再常驻屏幕最底部，桌面端视觉高度因此减少 56px（页脚槽位整体让给主内容列内部分配）。
+  - 播放条与 `sidebarPosition = 'left'` 组合时，跟随主内容列跑到右下侧（不是屏幕底部）。
+  - BN 组只断言「结构存在性与相对位置」，不断言任何交互（375px 下控件溢出，坐标点击不可靠）。
+  - `reset(cdp)` 的视口兜底修正会影响所有后续组的稳定性（属正向修复）。
+- **未验证**：
+  - 移动端真机渲染与触控体验未测（无真机，仅 CDP 模拟）。
+  - 窄屏断点跨越时（拖窗口 768 ↔ 767）的实时切换未做自动化断言，仅逻辑上由 `matchMedia change` 保证。
+  - 窄屏 + `sidebarPosition = 'left'` 的组合未单独断言。
+
+### 七、否决的备选方案
+
+- **CSS 双份渲染（`hidden md:block` 包两份 `PlaybackBar`）**：否决。会同时挂载两个 `[data-volume-control]`，AY 组的真实坐标点击与 `querySelectorAll` 判定全面失准；且两份 `useEffect` 会重复注册 wheel 监听。
+- **把播放条做成窄屏底部抽屉（原「轮 2c」规划）**：推翻并否决。抽屉仍占底部黄金位，且引入 overlay 层级与 z-index 契约（须 < 40 避开 `LineActionSheet` / `ConfirmDialog`），成本高于收益。
+- **本轮顺手压缩播放条控件以消除 375px 溢出**：否决。任务明确拆分——结构迁移与控件压缩分两轮，混在一轮会让 diff 与回归面失控。
+- **给 `PlaybackBar` 加 `isNarrow` prop 自行隐藏部分控件**：否决。会让纯展示组件开始感知视口，破坏「布局层决定结构、组件层只管内容」的分层。
+- **在 BN 组里断言精确 `innerWidth === 375`**：否决。shrink-to-fit 会把它撑到 738，锁定该数值等于锁定浏览器实现细节；只断言 `≤ 767` 足以证明结构分支命中。
+
+## 补充修正：轮次 2c-2（播放条极窄屏瘦身止血）
+
+> **用途**：接续轮 2c-1 的「播放条入列」，解决 375px 下播放条内部横向溢出的止血问题。
+> **状态**：✅ 已闭合。
+> **基线**：harness 583/583（BN 6/6、AY 9/9）；core vitest 208/208；tsc 退出码 0。
+> **上游/依赖**：轮 2c-1 已把 `PlaybackBar` 移入 `LeftColumn`，但明确「内部控件零改动、375px 仍溢出」；本轮只做控件瘦身，不改结构。
+
+### 一、本轮范围
+
+在 `< 768px` 下隐藏次要控件（速率、音量、音频文件名、`未加载音频` 占位），缩短时间读数并只保留当前时间，让进度条独占弹性宽度，从而消除播放条内部的横向溢出。**纯 Tailwind 响应式类名，零逻辑改动**，不引入 hook / 新组件，不动 harness。
+
+### 二、核心接口与契约变更
+
+- **新增接口**：无（`PlaybackBar` 仍无 props）。
+- **修改接口**：无（函数签名、状态、`data-volume-control` 标记全部不变）。
+- **数据模型/类型变更**：无。
+- **DOM 契约（供 harness 依赖）**：
+  - `[data-volume-control]` 在窄屏下**仍存在于 DOM，但 `display:none`**（`hidden md:flex`）。因此 BN.d 的「计数 === 1」仍成立；AY 组在 1280px 下依然可见可点。
+  - 新增类名契约：速率 / 音量 label 含 `hidden` + `md:flex`；文件名 `hidden` + `md:block`；`未加载音频` 占位 `hidden` + `md:inline`；时间读数的 ` / 总时长` 段 `hidden` + `md:inline`。
+
+### 三、关键设计与做法
+
+1. **只做显隐与宽度，不动逻辑**：所有改动均为 className 字符串，`onClick` / `onChange` / `useEffect` / `formatDuration` 调用零改动，避免回归。
+2. **断点对齐**：使用 Tailwind `md:`（`min-width: 768px`），与 `ThreeColumnLayout` 的 `(max-width: 767px)` 结构闸门边界互补，同一像素点不会出现「结构已切窄屏、控件还是桌面版」的错档。
+3. **时间读数瘦身**：窄屏 `w-[90px]` + `text-[11px]`，并把 ` / 总时长` 整体 `hidden md:inline`——保留当前播放时间这一核心信息，去掉总时长。`00:00.000` 在 11px 等宽字体下约 59px，90px 足够。
+4. **进度条唯一弹性项**：其余可见项全部 `shrink-0` 固定宽，进度条保持 `min-w-0 flex-1`，由它吸收剩余宽度，任何固定项都不会被压变形。
+5. **溢出兜底**：根节点补 `overflow-hidden`，即使未来某个子项加宽也只会被裁切，不会再撑出横向滚动条把整个页面 layout viewport 撑宽。
+6. **间距收窄**：根节点 `gap-4` → `gap-2 md:gap-4`，窄屏省下 24px，把余量让给进度条（375px 下约 77px）。
+
+### 四、改动文件清单
+
+| 文件 | 改动内容 | 影响范围/关联模块 |
+| :--- | :--- | :--- |
+| `src/ui/components/PlaybackBar.tsx` | 根节点 `gap-2 md:gap-4` + `overflow-hidden`；播放 / 打轴按钮 `w-16 md:w-20`；时间读数 `w-[90px] text-[11px] md:w-40 md:text-xs`；` / 总时长` 段 `hidden md:inline`；速率 / 音量 label `hidden … md:flex`；文件名 `hidden … md:block`；`未加载音频` `hidden … md:inline`。 | 仅播放条内部排版；桌面端 ≥768px 视觉不变 |
+
+### 五、验收证据
+
+- **tsc**：`npx tsc -b --noEmit` 退出码 0。
+- **vitest**：208/208（本轮未触碰逻辑）。
+- **harness**：583/583，0 失败；**BN 6/6**、**AY 9/9** 未红（桌面端 1280px 控件仍可见，坐标点击与 `querySelectorAll` 均不受影响）。
+- **关键算术**：375px 下布局可用宽 = 375 − 24（外层 `p-3`）= 351，播放条内容宽 = 351 − 32（`px-4`）= 319；窄屏固定项 = 64 + 64 + 90 + 8×3 = 242 < 319，进度条获得约 77px，无横向溢出。
+- **`git status --short`**：本轮业务文件仅 `src/ui/components/PlaybackBar.tsx` 新增改动（轮 2c-1 的 3 个业务文件尚未提交，仍在工作区）。
+
+### 六、已知取舍与未验证
+
+- **取舍**：
+  - 移动端隐藏速率与音量，用户在移动端无法调整这两项（规划在 2d 轮次移入底部工具栏）。
+  - 移动端隐藏文件名，用户无法在播放条确认当前音频名。
+  - 移动端隐藏总时长，只能看到当前时间。
+  - 通过 CSS 隐藏（`hidden md:flex`），DOM 仍存在：不影响桌面端 `querySelector` 与坐标点击，但意味着「窄屏下 `[data-volume-control]` 仍可被脚本查到、只是不可见」。
+- **未验证**：
+  - 无浏览器内实测的 `scrollWidth` 数字——硬边界禁止新增探针 / 断言，本轮只能给 CSS 算术证明 + 人工目测。
+  - BN.a 的 `innerWidth` 仍为 738（与 2c-1 相同），说明页面级溢出另有来源（推断为顶栏，属轮 3），本轮未单独验证。
+  - 320px 等更窄设备未预估优化（固定项 242 + gap 24 = 266，接近 320px 可用宽 264 的临界）。
+  - 真机渲染未测。
+
+### 七、否决的备选方案
+
+- **用 `useMediaQuery` hook / `isNarrow` prop 条件渲染控件**：否决。任务明确要求纯 CSS 显隐，且会让展示组件感知视口。
+- **把速率 / 音量改成图标按钮保留在窄屏**：否决。属 2d「底部工具栏 + 半屏面板」的范围，本轮只做止血。
+- **给时间读数写 `truncate` 而不是隐藏总时长**：否决。`truncate` 会切出半个字符（如 `00:12.3`），信息更差；直接隐藏 `/ 总时长` 更干净。
+- **只靠 `overflow-hidden` 裁切而不隐藏控件**：否决。控件会被切掉一半，既不可用又难看。
+- **调整 `px-4` / 按钮 `px-3` 内边距来挤空间**：否决。省下的像素有限（不足 20px），且会改变桌面端视觉，收益不如隐藏整块次要控件。
+
+## 轮次 3a：顶栏移动端折叠 + `⋯` 菜单
+
+> **状态**：✅ 已闭合。
+> **基线**：harness 583/583；core vitest 208/208；tsc 退出码 0。
+> **上游/依赖**：轮 2c-2 收尾时记录「BN.a 的 `innerWidth` 仍为 738，页面级溢出另有来源（推断为顶栏）」；轮 3 A 段核实用逐段测量确认顶栏最小内容宽约 850px（字号估算）/ 实测 layout viewport 被撑到 738，并列出 harness 对顶栏的硬依赖清单（`导入音频` 14 处真实坐标点击，`导入 LRC` / `导入 LRC / 文本 / Word` / `手动输入` / `设置` 走文本匹配点击）。
+
+## 一、本轮范围
+
+把顶栏在 `<768px` 折叠：两个桌面控件组整组 `display:none`，新增窄屏 `⋯` 入口与面板接管全部入口（导入三入口 / 导出 / 导入音频 / 设置），使 375px 下页面不再横向溢出。
+
+## 二、核心接口与契约变更
+
+- **新增接口（`SettingsMenu`）**：
+  - `SettingsMenuProps`：`open?: boolean`、`onOpenChange?: (open: boolean) => void`、`hideTrigger?: boolean`、`panelAlign?: 'left' | 'right'`，全部可选，**不传即为原自管行为**。
+  - `SettingsMenu` 组件签名：`export function SettingsMenu({ open: controlledOpen, onOpenChange, hideTrigger = false, panelAlign = 'left' }: SettingsMenuProps = {})`。
+- **修改接口**：
+  - `SettingsMenu` 的 `open` 由内部 `useState` 改为「受控 / 非受控双模」：`controlledOpen !== undefined` 为准，否则用内部 `uncontrolledOpen`；`setOpen(next)` 统一收口（非受控时写内部状态，受控时调 `onOpenChange`）。触发按钮 `onClick` 由 `setOpen(v => !v)` 改为 `setOpen(!open)`。
+- **数据模型/类型变更**：无。
+- **DOM 契约**：
+  - 新增窄屏入口按钮 `title="更多"`、文案 `⋯`，容器 `md:hidden`。
+  - 窄屏面板为 `w-48`、`absolute right-0 top-full z-20`，配 `fixed inset-0 z-10` 遮罩；条目**仅在 `moreMenuOpen` 为真时渲染**（关闭时不进 DOM）。
+  - 两个桌面控件组容器补 `hidden … md:flex`，桌面端 DOM 与文字零变化；桌面 `<SettingsMenu />` 未传任何 props，DOM 不变。
+
+## 三、关键设计与做法
+
+1. **CSS 折叠而非 JS 条件渲染**：harness 在 1280px 下运行，所有依赖顶栏的坐标点击与文本匹配必须保持原样，因此桌面控件一律 `display:none`（DOM 保留），窄屏入口用 `md:hidden` 反向显隐。
+2. **防文本重复命中**：`⋯` 面板的 `导入 LRC / 文本 / Word`、`手动输入`、`导入音频`、`设置` 与桌面同名。若面板常驻 DOM，`clickButtonText`（取首个匹配、`.click()` 对 `display:none` 也生效）可能命中隐藏副本。故全部条目**条件渲染**，关闭时不在 DOM。
+3. **导入做成二级内联展开**：点「导入歌词…」展开三个缩进条目（`moreImportOpen`），而非 hover 子菜单——触屏无 hover，内联展开只用一个 `useState`，且每次重开 `⋯` 都复位为收起。
+4. **设置面板复用而非重写**：窄屏再挂一个 `SettingsMenu`，以 `hideTrigger` 不渲染自带按钮，由 `⋯` 的「设置」条目受控打开；`panelAlign="right"` 让 `w-72`（288px）面板贴右缘，在 375px 视口内不溢出（左对齐会从 `⋯` 位置向右撑出屏幕）。桌面实例保持无 props 的原用法，行为与 DOM 零变化。
+5. **关闭路径齐全**：点遮罩（`fixed inset-0 z-10` 的透明 button）关闭、点任一条目先关菜单再执行动作、Esc 由 `moreMenuOpen` 驱动的 `keydown` effect 关闭；`⋯` 按钮本身也走 `setMoreMenuOpen(!open)`。
+
+## 四、改动文件清单
+
+| 文件 | 改动内容 | 影响范围/关联模块 |
+| :--- | :--- | :--- |
+| `src/ui/App.tsx:66-70` | 新增 `moreMenuOpen` / `moreImportOpen` / `mobileSettingsOpen` 三个 state | 窄屏菜单开合、二级展开复位、受控设置面板 |
+| `src/ui/App.tsx:109-116` | 新增 Esc 关闭的 `keydown` effect（依赖 `moreMenuOpen`） | 窄屏菜单键盘关闭 |
+| `src/ui/App.tsx:246-248` | 新增 `moreSubItemClass`（二级条目左缩进样式） | 仅窄屏菜单视觉 |
+| `src/ui/App.tsx:269` | 右侧组 1 容器 `ml-auto flex shrink-0 items-center gap-2` → 追加 `hidden … md:flex` | 桌面端零视觉变化，窄屏整组隐藏 |
+| `src/ui/App.tsx:337` | 右侧组 2 容器 `ml-auto flex items-center gap-2` → 追加 `hidden … md:flex` | 窄屏「分级回退 / 按类型撤销 / 日志数」整组隐藏 |
+| `src/ui/App.tsx:368-482` | 新增 `md:hidden` 的 `⋯` 入口 + 条件渲染面板（导入二级三项 / 导出 LRC / 导入音频 / 设置）+ 受控 `SettingsMenu` 实例 | 窄屏全部顶栏入口；桌面端因 `md:hidden` 不参与布局 |
+| `src/ui/components/SettingsMenu.tsx:424-432` | 新增可选 `SettingsMenuProps`（`open` / `onOpenChange` / `hideTrigger` / `panelAlign`） | 桌面端不传即旧行为 |
+| `src/ui/components/SettingsMenu.tsx:442-460` | 受控 / 非受控双模：`uncontrolledOpen` + `controlled` + 统一 `setOpen` | 桌面自管逻辑等价 |
+| `src/ui/components/SettingsMenu.tsx:481-494` | 触发按钮包进 `hideTrigger ? null : (...)`，`onClick` 改 `setOpen(!open)` | 窄屏不渲染重复「设置」按钮，规避文本匹配歧义 |
+| `src/ui/components/SettingsMenu.tsx:503-506` | 面板类名 `left-0` → 按 `panelAlign` 取 `left-0` / `right-0` | 窄屏右对齐防溢出 |
+
+## 五、验收证据
+
+- **tsc**：`npx tsc -b --noEmit` 退出码 0。
+- **vitest**：208/208（本轮未触碰逻辑与核心模块）。
+- **harness**：583/583，0 失败；重点组全部未红——BH 13/13（`导入 LRC` / `手动输入` 文本点击）、BM 2/2（`导入 LRC / 文本 / Word`）、所有含 `setupAudio` 的 14 处 `导入音频` 坐标点击（AL~AY）、AY 9/9 与 BB（`设置` 文本点击 + 15 项 `data-settings-item` 集合）。
+- **关键实测**：`BN.a` 的 `window.innerWidth` 由轮 2c-1/2c-2 的 **738 → 375**。CDP `mobile:true` + 375px 下 layout viewport 会被内容撑宽（shrink-to-fit），因此该数字等价于「内容最小宽度 ≤ 375，不再溢出」；本轮 harness 一行未改，属对既有断言的自然观测。
+- **`git status --short`**：本轮业务文件 2 个（`src/ui/App.tsx`、`src/ui/components/SettingsMenu.tsx`）；`PlaybackBar.tsx` / `LeftColumn.tsx` / `ThreeColumnLayout.tsx` / `harness/run.mjs` 为 2c-1、2c-2 的未提交存量；`docs/` 变更属归档（豁免条款）。
+
+## 六、已知取舍与未验证
+
+- **取舍**：
+  - 移动端整组隐藏「分级回退 / 撤销该类型全部记录」，手机端无法按类型回退（单条撤销仍可用）。
+  - 移动端「共 N 条日志」不可见（日志面板在手机端本就无入口）。
+  - 「设置 / 导入 / 导出 / 导入音频」在移动端多一次点击。
+  - 桌面控件用 `display:none` 而非卸载，DOM 中存在两套入口文本；靠「窄屏条目条件渲染」规避 `clickButtonText` 命中隐藏副本。
+  - `SettingsMenu` 由单态变为受控 / 非受控双模；桌面端未传 props，等价于旧行为。
+  - 窄屏多挂一个 `SettingsMenu` 实例（只为复用面板），它在桌面端被 `md:hidden` 隐藏且不渲染触发按钮。
+  - 「导入歌词…」采用二级内联展开而非 hover 子菜单：触屏无 hover，内联展开只需一个 `useState`。
+- **未验证**：
+  - 375px 下 `document.documentElement.scrollWidth` 未用探针直接测量（硬边界禁止改 harness）；只有 `innerWidth = 375` 这一间接等价证据。
+  - `⋯` 菜单的点选贯通、遮罩/ Esc 关闭、`panelAlign="right"` 的视觉贴合，均未经自动化交互测试，留人工目测。
+  - 320px 等更窄机型未预估；焦点顺序 / Tab 是否合理进入 `⋯` 面板未测。
+
+## 七、否决的备选方案
+
+- **用 `isNarrow` / `useMediaQuery` 条件渲染桌面控件组**：否决。会让 1280px 下 DOM 结构随视口变化，且顶栏属 App 层，引入断点状态与 `ThreeColumnLayout` 的闸门语义重复。
+- **把 `⋯` 面板常驻 DOM、仅用 CSS 显隐**：否决。`clickButtonText` 对 `display:none` 元素仍会命中并 `.click()`，桌面测试会点到隐藏副本（尤其 `导入音频` 被 14 处坐标点击依赖）。
+- **直接把 `SettingsMenu` 的内部 `open` 状态提升到 App、桌面也改为受控**：否决。桌面端需额外传 props 并重排触发按钮位置，DOM 变化风险大于收益；改为「可选 props + 默认旧行为」。
+- **抽独立的 `MoreMenu.tsx` 组件**：否决。本轮只有一处使用、状态与 `App` 的三个 handler 强耦合，抽出去要再透传 5 个回调，收益不足；等 2d 底部工具栏出现第二处入口再抽。
+- **把「分级回退」也搬进 `⋯` 菜单**：否决。整套回退依赖 `pendingKind` 的 `<select>` 与禁用态联动，塞进窄面板会做成一坨不可用的控件；移动端按类型回退留待后续专门设计。
+
+## 轮次 3b：播放条窄屏高度压缩 + 顶栏折叠回归锁
+
+> **状态**：✅ 已闭合。
+> **基线**：harness 588/588（BN 11/11）；core vitest 208/208；tsc 退出码 0。
+> **上游/依赖**：轮 3a 已把顶栏在窄屏折叠为 `⋯` 菜单（BN.a 的 `innerWidth` 由 738 → 375），但这些行为当时靠人工目测，没有任何 harness 断言兜底；同时 2c-2 瘦身后的播放条仍是 `h-14`（56px），在 375px 纵向空间里偏厚。
+
+### 一、本轮范围
+
+两件事：① 播放条窄屏高度 56px（`h-14`）压到 40px（`h-10`），桌面保持 56px；② 为轮 3a 的顶栏折叠补 5 条 harness 回归锁（layout viewport 未被撑宽、`⋯` 菜单关闭时入口不进 DOM、点开可见、Esc 关闭）。
+
+### 二、核心接口与契约变更（极其重要）
+
+- **新增接口**：无。
+- **修改接口**：无（`PlaybackBar` 仍是零 props 组件）。
+- **数据模型/类型变更**：无。
+- **DOM 契约（供 harness 依赖）**：
+  - 播放条根节点新增响应式高度：窄屏 `h-10`（40px）、`md:` 起 `h-14`（56px）。子结构、`data-volume-control`、`title="播放/暂停（E）"` / `title="打轴（空格）"` 全部未变。
+  - 依赖 3a 既有契约：`button[title="更多"]` 为窄屏 `⋯` 入口；其面板条目**条件渲染**，关闭时不在 DOM。
+  - harness 新增的判定方式：`getClientRects().length > 0` 判「有渲染盒（可见）」，DOM 存在性用 `querySelectorAll('button')` + `textContent` **前缀**匹配。
+
+### 三、关键设计与做法
+
+1. **高度只改根节点，不动子元素**：`h-14` → `h-10 md:h-14` 是唯一业务改动。逐一核查子元素后确认无人显式写超高：播放 / 打轴按钮 `px-3 py-1 text-xs`（约 24px 高）、时间 `text-[11px]`、进度条 `input[type=range]` 走 flex 居中、速率 / 音量 / 文件名 / `未加载音频` 在窄屏本就是 `hidden md:*`。故 40px 下无需任何子元素 padding 调整，也没有加 `overflow-hidden` 之外的裁剪处理（`overflow-hidden` 是 2c-2 就有的）。
+2. **`BN.h` 的口径调整（任务书原文与 3a 设计冲突）**：任务书要求「四个入口文本在 DOM 中不存在」，但 3a 的桌面控件组在窄屏是 `display:none`、**DOM 仍在**，字面实现必然红。因此 `BN.h` 断言的是「四入口**不可见**」（`visible.length === 0`），另拆 `BN.h.2` 只锁菜单**专属**文案「导入歌词…」（它在桌面控件组里不存在，只在 `⋯` 面板出现）确实不在 DOM，等价覆盖了「不能被改成 CSS 隐藏」的意图。
+3. **前缀匹配而非全等**：「导入歌词…」按钮的 `textContent` 实际是 `导入歌词…▸`（含展开箭头 span），首版用全等匹配导致 `BN.h.2` / `BN.j` 空转（永远命中不到、断言恒真）。改为 `t.indexOf(texts[k]) === 0` 后，`BN.i` 打印出的 `visible` 为 `["导入歌词…▸","导出 LRC","导入音频","设置"]`，四入口齐全。
+4. **点击不依赖文本探针**：`⋯` 按钮文案只有一个 `⋯` 字形，`clickButtonText` 按文本匹配不可靠，直接用 `document.querySelector('[title="更多"]').click()` 的 eval 完成点击，未新增任何 `__lrc` 探针。
+5. **Esc 走既有 `keyPress` 工具**：复用 harness 顶层 `keyPress(cdp, 'Escape', 'Escape', 27)`（`Input.dispatchKeyEvent` 的 `rawKeyDown` + `keyUp`），与 3a 里 `window` 上的 `keydown` 监听路径一致；点击与按键后各 `sleep(150)` 等 React 提交。
+
+### 四、改动文件清单
+
+| 文件 | 改动内容 | 影响范围/关联模块 |
+| :--- | :--- | :--- |
+| `src/ui/components/PlaybackBar.tsx:78` | 根节点 `flex h-14 shrink-0 …` → `flex h-10 shrink-0 … md:h-14 md:gap-4`（`h-14` 保留在 `md:` 上） | 窄屏播放条 56px → 40px；桌面零变化；内部控件零改动 |
+| `harness/run.mjs:4552-4571` | 新增 `MORE_TEXTS` 常量与 `scanMoreEntries` 扫描器（区分 `visible` / `all`，前缀匹配） | 仅 BN 组内使用 |
+| `harness/run.mjs:4626-4670` | 新增 `BN.g` / `BN.h` / `BN.h.2` / `BN.i` / `BN.j` 五条断言 | 断言总数 583 → 588；既有断言零改动 |
+| `harness/run.mjs:4774` | TESTS 里 BN 组描述补「顶栏折叠回归锁」 | 仅测试报告文案 |
+
+### 五、验收证据
+
+- **tsc**：`npx tsc -b --noEmit` 退出码 0。
+- **vitest**：208/208（12 个文件）。
+- **harness**：588/588，0 失败。BN 11/11（原 6 条 + 新增 5 条）；其中 `BN.a` 的 `innerWidth` 实测 **375**（3a 前为 738）。AY 9/9（音量坐标点击）、BM 2/2（Word 导入冒烟）、BL 14/14 均未红。
+- **关键实测**：`BN.g` 通过说明 `mobile:true` + 375px 下 layout viewport 未被内容撑宽（shrink-to-fit 已解除）；`BN.h` 的 `visible` 为空、`BN.h.2` 命中不到「导入歌词…」说明关闭态的 `⋯` 条目确实不在 DOM；`BN.i` / `BN.j` 一开一关证明点击与 Esc 两条路径都通。
+- **`git status --short`**：本轮业务文件恰 2 个（`src/ui/components/PlaybackBar.tsx`、`harness/run.mjs`）。同屏另有 `App.tsx` / `SettingsMenu.tsx` / `LeftColumn.tsx` / `ThreeColumnLayout.tsx` 为 2c-1 / 2c-2 / 3a 的未提交存量，非本轮改动。
+
+### 六、已知取舍与未验证
+
+- **取舍**：
+  - 窄屏播放条 40px 低于 44px 触控建议值；播放 / 打轴按钮仍是 `py-1` 小控件，未专门放大热区（放大反而会撑破 40px）。
+  - `BN.g` 用 `innerWidth <= 380` 而非精确 375，留 5px 容差，避免不同 Chromium 版本的亚像素 / 滚动条差异导致假红。
+  - `BN.h` / `BN.i` 只断言「文本可见 / 不存在」，不断言菜单样式、层级与二级展开；视觉贴合仍靠人工。
+  - 桌面播放条高度不变（`md:h-14`），AY 组的音量坐标点击不受影响。
+  - 为规避 3a 的「桌面控件组 DOM 常驻」事实，`BN.h` 语义由「不存在」调整为「不可见」并拆出 `BN.h.2` 补救，属对任务书口径的主动偏离（已在交付中说明）。
+- **未验证**：40px 下按钮 / 时间 / 进度条的视觉舒适度与是否拥挤，未真机目测；`⋯` 菜单的开合仅证到「渲染盒存在与否」，未测动画、焦点顺序与二级展开；320px 等更窄机型未测。
+
+### 七、否决的备选方案
+
+- **按任务书字面写「四入口完全不在 DOM」**：否决。窄屏下桌面控件组只是 `display:none`，DOM 一定存在，断言会永久红；改用「不可见 + 菜单专属文案不在 DOM」的等价口径。
+- **`BN.g` 精确断言 `innerWidth === 375`**：否决。亚像素与滚动条实现差异会带来假红，5px 容差足够区分「375」与「738」两种状态。
+- **给 `__lrc` 新增 `openMoreMenu()` / `getMoreEntries()` 探针**：否决。任务书明令不新增探针，且 `querySelector('[title="更多"]').click()` 一行 eval 已够用。
+- **用 `clickButtonText('⋯')` 点开菜单**：否决。按钮内除 `⋯` 外还有开合态样式差异，文本匹配脆弱；`title="更多"` 是 3a 已定的稳定契约。
+- **把 `scanMoreEntries` 抽成 harness 顶层公共函数**：否决。当前只有 BN 组一处使用，抽出会让字符串拼接式 eval 多一层间接；等出现第二处再抽。
+
 
 
 
