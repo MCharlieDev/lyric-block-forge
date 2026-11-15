@@ -1,0 +1,20 @@
+import { LyricBlockPanel } from '../components/LyricBlockPanel'
+import { TimelineStrip } from '../timeline/TimelineStrip'
+
+/**
+ * 左侧主区域：时间轴条 + 歌词块清单，纵向约 1.4 : 1 分割。
+ *
+ * 自身 `flex-1 min-w-0`：只要还在父级 flex 行里，就无条件吃掉剩余宽度，
+ * 右侧侧栏（展开 / 收起）如何变化都不影响它拿满剩余空间。
+ * 两个子组件的高度比例仍由它们自身的 `flex-[1.4]` / `flex-1` 决定。
+ */
+export function LeftColumn() {
+  return (
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+      {/* 左上：时间轴条（自身带 flex-[1.4] 卡片样式，约 58% 高度） */}
+      <TimelineStrip />
+      {/* 左下：歌词块清单，吃掉剩余高度（PanelFrame 自带卡片样式与内部滚动） */}
+      <LyricBlockPanel />
+    </section>
+  )
+}
