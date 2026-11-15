@@ -86,7 +86,7 @@ export function ThreeColumnLayout() {
   const sidebarPosition = useSettingsStore((state) => state.settings.sidebarPosition)
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col gap-3 overflow-hidden bg-canvas p-3">
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-1 overflow-hidden bg-canvas p-1 md:gap-3 md:p-3">
       <div className="flex min-h-0 min-w-0 flex-1 gap-3">
         {sidebarPosition === 'left' ? (
           <>

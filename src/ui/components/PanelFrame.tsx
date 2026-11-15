@@ -26,7 +26,7 @@ export function PanelFrame({ title, hint, actions, className = '', children }: P
     >
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-divider px-3 py-1.5">
         <div className="flex items-baseline gap-2">
-          <h2 className="text-xs font-medium text-neutral-200">{title}</h2>
+          <h2 className="shrink-0 whitespace-nowrap text-xs font-medium text-neutral-200">{title}</h2>
           {hint ? <span className="text-[11px] text-neutral-500">{hint}</span> : null}
         </div>
         {actions ? <div className="flex items-center gap-1">{actions}</div> : null}

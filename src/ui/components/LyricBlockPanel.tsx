@@ -186,9 +186,10 @@ export function LyricBlockPanel() {
     <>
       <PanelFrame
         title="歌词块"
-        hint="一行多时间戳 / 双语合并后的翻译随主文本一起移动；占位 · 拖动未接入"
         className="flex-1"
-        actions={<span className="text-[11px] text-neutral-500">共 {lines.length} 行</span>}
+        actions={
+          <span className="shrink-0 whitespace-nowrap text-[11px] text-neutral-500">共 {lines.length} 行</span>
+        }
       >
         <ul ref={listRef} className="divide-y divide-divider/60">
           {lines.map((line, index) => {

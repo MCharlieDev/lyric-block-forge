@@ -25,7 +25,7 @@ interface LeftColumnProps {
  */
 export function LeftColumn({ showPlaybackBar = false }: LeftColumnProps) {
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-1 md:gap-3">
       {/* 左上：时间轴条（自身带 flex-[1.4] 卡片样式，约 58% 高度） */}
       <TimelineStrip />
       {/* 窄视口：播放条占用原本页脚的位置，把屏幕最底部让给歌词列表 */}
