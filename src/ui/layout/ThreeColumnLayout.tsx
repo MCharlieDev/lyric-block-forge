@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { PlaybackBar } from '../components/PlaybackBar'
+import { useSettingsStore } from '../stores/settingsStore'
 import { ActivityBar } from './ActivityBar'
 import { LeftColumn } from './LeftColumn'
 import { RightSidebar } from './RightSidebar'
@@ -9,6 +10,8 @@ import { RightSidebar } from './RightSidebar'
  *
  * - 左侧：`LeftColumn`（时间轴条 + 歌词块清单，约 1.4 : 1 分割高度）；
  * - 右侧：`RightSidebar`（工作日志，展开时才渲染）+ `ActivityBar`（常驻图标栏）；
+ *   `ActivityBar` / `RightSidebar` 这一组的停靠侧由设置项 `sidebarPosition` 决定
+ *   （默认右侧；切到左侧时整组镜像到主内容列之前，开合状态保持不变）；
  * - 底部：播放控制条，音频时钟是唯一播放基准。
  *
  * ## 为什么用 flex 而不是 grid
@@ -57,12 +60,25 @@ export function ThreeColumnLayout() {
     setIsCollapsed((collapsed) => !collapsed)
   }
 
+  // 侧栏停靠侧（默认右侧）：只改变渲染顺序，不重置 isCollapsed
+  const sidebarPosition = useSettingsStore((state) => state.settings.sidebarPosition)
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-3 overflow-hidden bg-canvas p-3">
       <div className="flex min-h-0 min-w-0 flex-1 gap-3">
-        <LeftColumn />
-        {!isCollapsed && <RightSidebar />}
-        <ActivityBar isPanelOpen={!isCollapsed} onToggle={handleToggle} />
+        {sidebarPosition === 'left' ? (
+          <>
+            <ActivityBar side="left" isPanelOpen={!isCollapsed} onToggle={handleToggle} />
+            {!isCollapsed && <RightSidebar />}
+            <LeftColumn />
+          </>
+        ) : (
+          <>
+            <LeftColumn />
+            {!isCollapsed && <RightSidebar />}
+            <ActivityBar side="right" isPanelOpen={!isCollapsed} onToggle={handleToggle} />
+          </>
+        )}
       </div>
 
       {/* 底部：播放控制，位于最外层 padding 之内 */}

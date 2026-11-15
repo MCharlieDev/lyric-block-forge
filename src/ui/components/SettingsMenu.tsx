@@ -172,7 +172,7 @@ const SECTIONS: SettingsSection[] = [
       {
         id: 'closeDialogOnBackdropClick',
         label: '点击遮罩关闭行操作弹窗',
-        keywords: '遮罩 弹窗 关闭',
+        keywords: '遮罩 弹窗 关闭 侧栏 位置 活动栏',
         control: ({ settings, update }) => (
           <div className="flex flex-col gap-1">
             <label className={checkboxRowClass}>
@@ -194,6 +194,19 @@ const SECTIONS: SettingsSection[] = [
                 className="accent-accent"
               />
               点击遮罩关闭前缀规则弹窗
+            </label>
+            <label className={`${labelClass} mt-1`}>
+              侧栏位置
+              <select
+                value={settings.sidebarPosition}
+                onChange={(event) =>
+                  update({ sidebarPosition: event.target.value === 'left' ? 'left' : 'right' })
+                }
+                className={fieldClass}
+              >
+                <option value="right">右侧（默认）</option>
+                <option value="left">左侧</option>
+              </select>
             </label>
           </div>
         ),

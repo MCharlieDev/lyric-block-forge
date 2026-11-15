@@ -1,7 +1,9 @@
-/** 活动栏固定宽度：3rem（48px），比原收起态窄栏宽 12px，为触控目标留出余量。 */
-export const ACTIVITY_BAR_WIDTH_CLASS = 'w-12'
+/** 活动栏固定宽度：2.25rem（36px），与内部图标按钮同宽，视觉上更轻。 */
+export const ACTIVITY_BAR_WIDTH_CLASS = 'w-9'
 
 interface ActivityBarProps {
+  /** 侧栏停靠侧：决定强调条贴在活动栏的哪一侧（贴面板的一侧） */
+  side: 'left' | 'right'
   /** 右侧面板当前是否展开 */
   isPanelOpen: boolean
   /** 点击图标：开 / 合面板 */
@@ -9,26 +11,30 @@ interface ActivityBarProps {
 }
 
 /**
- * 右侧常驻活动栏（Activity Bar）。
+ * 常驻活动栏（Activity Bar）。
  *
- * 图标常驻屏幕右缘，点击切换右侧面板的开合；展开态图标高亮并在左缘
- * （贴面板的一侧）显示 2px 强调条。非展开态用 `border-transparent`
- * 占住同样的 2px，避免开合时图标横向跳动。
+ * 图标常驻屏幕边缘，点击切换侧栏面板的开合；展开态图标高亮并在
+ * **贴面板的一侧**显示 2px 强调条（`side === 'right'` 用 `border-l-2`，
+ * `side === 'left'` 用 `border-r-2`）。非展开态用 `border-transparent`
+ * 占住同样的 2px，避免开合或左右切换时图标横向跳动。
  *
- * 本轮（2a）固定渲染在右侧；轮 2b 将新增 `position` 支持左右切换。
+ * 停靠侧由设置项 `sidebarPosition` 决定，默认右侧。
  * 图标为内联 SVG，未引入任何图标库依赖。
  */
-export function ActivityBar({ isPanelOpen, onToggle }: ActivityBarProps) {
+export function ActivityBar({ side, isPanelOpen, onToggle }: ActivityBarProps) {
+  // 强调条永远贴面板：面板在右则高亮左缘，面板在左则高亮右缘
+  const highlightEdgeClass = side === 'right' ? 'border-l-2' : 'border-r-2'
+
   return (
     <aside
-      className={`flex min-h-0 ${ACTIVITY_BAR_WIDTH_CLASS} shrink-0 grow-0 flex-col items-center gap-1 border border-divider bg-panel/50 py-2`}
+      className={`flex min-h-0 ${ACTIVITY_BAR_WIDTH_CLASS} shrink-0 grow-0 flex-col items-center gap-1 rounded-lg border border-divider bg-panel/50 py-2`}
     >
       <button
         type="button"
         title="工作日志"
         aria-pressed={isPanelOpen}
         onClick={onToggle}
-        className={`flex h-9 w-9 items-center justify-center rounded border-l-2 transition-colors ${
+        className={`flex h-9 w-full items-center justify-center rounded ${highlightEdgeClass} transition-colors ${
           isPanelOpen
             ? 'border-accent text-neutral-100'
             : 'border-transparent text-neutral-500 hover:text-neutral-300'

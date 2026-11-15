@@ -1,7 +1,7 @@
 # UI 架构重构 · 交接文档
 
 > **用途**：记录把主界面布局从「尺寸写死在壳里」重构为「可拆解原语」的过程。配合主交接文档阅读。
-> **状态**：轮 1/3 ✅、轮 2a ✅ 已闭合（轮 2b 活动栏左右切换、轮 2c 窄视口抽屉、轮 3 顶栏/播放条移动端压缩未开始）。
+> **状态**：轮 1/3 ✅、轮 2a ✅、轮 2b ✅ 已闭合（轮 2c 窄视口抽屉、轮 3 顶栏/播放条移动端压缩未开始）。
 > **基线**：harness 577/577；core vitest 208/208；tsc 退出码 0。
 > **上游/依赖**：A 段《UI 架构摸底》核实结论——三个面板是真模块组件，但尺寸策略（`w-80` / `w-9` / `flex-[1.4]` / `min-width:1100px`）全部写死在 `src/ui/layout/ThreeColumnLayout.tsx` 一个文件里，且 `matchMedia` 跨断点会强制覆盖用户手动的展开/收起。
 
@@ -122,4 +122,80 @@
 - **保留「收起 ›」按钮作为第二入口**：否决。两个入口语义重复，且会把开合状态分散到两处；单一 toggle 更符合活动栏范式。
 - **用 `absolute` 画左缘高亮条**：否决。按钮自身 `border-l-2` 足以表达，绝对定位会引入额外定位上下文与层级风险。
 - **把 `isCollapsed` 直接透传给 ActivityBar 而非传 `isPanelOpen`**：否决。活动栏语义是「面板是否打开」，取反放在外壳完成，避免每个消费者心里做一次反转。
+
+### 补充修正：ActivityBar 宽度与圆角
+
+> 用户真机目测反馈：常驻栏丢了圆角，且 `w-12`（48px）比内部按钮宽一圈，显得笨重。
+
+- `ACTIVITY_BAR_WIDTH_CLASS` 由 `'w-12'` 改回 `'w-9'`（36px，即轮 1 收起态宽度），与内部图标按钮同宽。
+- `aside` 补 `rounded-lg`，恢复与 `LogPanel` 卡片一致的圆角语言。
+- 按钮由 `h-9 w-9` 改 `h-9 w-full`：铺满栏宽（`aside` 本身无横向 padding，按钮直达内缘），激活态 `border-l-2 border-accent` 因此贴在活动栏最左侧边缘。
+- 仅 `ActivityBar.tsx` 一个文件、纯 className 改动，零业务逻辑变更；tsc 退出码 0，harness 577/577 未变。
+
+**取舍**：36px 的点击目标低于 44px 触控建议值，换来的是与面板边框视觉对齐；若移动端（轮 3）需要更大热区，应在轮 3 用 `min-h-11` 或断点加宽单独处理，不回退本轮宽度。
+
+## 轮次 2b：活动栏与面板可切换左右
+
+> **状态**：✅ 已闭合。新增设置项 `sidebarPosition: 'left' | 'right'`（默认 `'right'`），`ActivityBar` 增强调条方向。
+> **基线**：harness 577/577（BB 组 42/42）；vitest 208/208；tsc 退出码 0。
+
+### 一、本轮范围
+
+让用户把「ActivityBar + 日志面板」整组停靠到左侧：新增 `sidebarPosition` 设置项（折叠进现有 `data-settings-item`，不新增容器），`ActivityBar` 按 `side` 切换 2px 强调条方向，`ThreeColumnLayout` 按设置项镜像渲染顺序。
+
+### 二、核心接口与契约变更
+
+- **新增接口**：
+  - `AppSettings.sidebarPosition: 'left' | 'right'`，`DEFAULT_SETTINGS.sidebarPosition = 'right'`；`normalizeSettings` 白名单回退（非 `'left'` / `'right'` → 默认 `'right'`）。
+- **修改接口**：
+  - `ActivityBar`：props 新增 `side: 'left' | 'right'`（必填）。`side === 'right'` 用 `border-l-2`，`side === 'left'` 用 `border-r-2`，非激活态统一 `border-transparent` 占位。
+- **DOM 契约（供 harness 依赖）**：
+  - `data-settings-item` **计数不变**：源码中该属性仍只有 1 处（渲染模板），运行时仍渲染 15 项——「侧栏位置」`select` 追加在 `closeDialogOnBackdropClick` 这一项内部，未新增容器。
+  - `ActivityBar` 的 `button[title="工作日志"][aria-pressed]` 结构不变，仅 class 中的 `border-l-2` 变为动态拼接。
+
+### 三、关键设计与做法
+
+1. **折叠而非扩项**：设置面板按 `SECTIONS[].items[]` 渲染，每项一个 `data-settings-item`。新增独立 item 会让 BB 组「严格 15 项」断言变红，因此「侧栏位置」作为第三行追加进 `closeDialogOnBackdropClick` 的 control `<div>` 内，并把该项 keywords 补上「侧栏 位置 活动栏」保证可搜索。
+2. **渲染顺序而非 CSS 定位**：左右切换只改第一行子节点顺序（`left` 为 `ActivityBar → RightSidebar → LeftColumn`），不引入 `order-*`、`flex-row-reverse` 或绝对定位，保持「DOM 顺序 = 视觉顺序」。
+3. **强调条永远贴面板**：`side === 'right'` 时面板在活动栏左边 → `border-l-2`；`side === 'left'` 时面板在右边 → `border-r-2`。两侧都用 `border-transparent` 占位，切换与开合都不会产生 2px 跳动。
+4. **开合状态跨位置保持**：`isCollapsed` 与 `userToggledRef` 都在 `ThreeColumnLayout` 顶部、与 `sidebarPosition` 无关，切位置不重置开合。
+5. **暂不改名**：`LeftColumn` / `RightSidebar` 的名字与「可配置方位」冲突，本轮仅在 `LeftColumn` 注释里记挂账，等 2c / 轮 3 闭环后统一 Rename，避免干扰本轮 diff。
+
+### 四、改动文件清单
+
+| 文件 | 改动内容 | 影响范围/关联模块 |
+| :--- | :--- | :--- |
+| `src/ui/stores/settingsStore.ts` | 新增 `sidebarPosition` 字段、默认值 `'right'`、`normalizeSettings` 白名单回退。 | 设置持久化；搜索/渲染由元数据自动派生 |
+| `src/ui/components/SettingsMenu.tsx` | 「界面」段首项内部追加「侧栏位置」`select`（右 / 左），该项 keywords 补「侧栏 位置 活动栏」；**未新增 `data-settings-item`**。 | 设置面板 UI 密度；15 项断言不变 |
+| `src/ui/layout/ActivityBar.tsx` | props 新增 `side`；`highlightEdgeClass` 按 side 取 `border-l-2` / `border-r-2`；注释同步。 | 强调条方向 |
+| `src/ui/layout/ThreeColumnLayout.tsx` | 订阅 `settings.sidebarPosition`；第一行按 side 镜像渲染三个子节点；未动 `userToggledRef` / matchMedia / `handleToggle` / 外壳 / footer。 | 布局顺序；开合状态不受影响 |
+| `src/ui/layout/LeftColumn.tsx` | 仅注释 +3 行：说明语义为「主内容列」、方位可能翻转、改名留待后续。 | 无代码影响 |
+
+### 五、验收证据
+
+- **tsc**：`npx tsc -b --noEmit` 退出码 0。
+- **vitest**：208/208，12 文件全过。
+- **harness**：577/577，0 失败；**BB 组 42/42 全绿**（含「设置项严格 15 项」与重载保持类断言），证明折叠方式有效。
+- **关键断言/实测**：`data-settings-item` 源码计数新增前后均为 **1**（渲染项 15 → 15）；`git status --short` 业务文件恰 **5 个**（`settingsStore.ts`、`SettingsMenu.tsx`、`ActivityBar.tsx`、`ThreeColumnLayout.tsx`、`LeftColumn.tsx`），另有 `docs/` 归档 2 项不计。
+
+### 六、已知取舍与未验证
+
+- **取舍**：
+  - `LeftColumn` 名字与位置不符的问题记入挂账，本轮仅在注释中澄清，不做 Rename（避免干扰 diff）。
+  - 新增设置项折叠进现有 `data-settings-item`，「界面」段首项从 2 行变 3 行，UI 密度增加。
+  - 面板开合状态（`isCollapsed`）跨切换位置时保持，不重置。
+- **未验证**：
+  - 左侧停靠下的视觉观感（强调条在右缘、面板在图标右侧）未截图比对。
+  - `sidebarPosition` 未加入 harness 的「重载保持」断言（本轮禁改 harness），持久化正确性仅由 `normalizeSettings` 的白名单逻辑保证。
+  - 375px 窄屏 + 左侧停靠的组合未测（属轮 2c/3）。
+
+### 七、否决的备选方案
+
+- **新增独立 `data-settings-item` 承载「侧栏位置」**：否决。会让设置项从 15 变 16，直接打红 BB 组断言；按要求只允许折叠。
+- **用 CSS `order-*` / `flex-row-reverse` 实现左右镜像**：否决。DOM 顺序与视觉顺序脱节，键盘 Tab 焦点顺序会与视觉相反，读屏也乱。
+- **把 `ActivityBar` 的强调条改成 `absolute` 定位以避开 border 拼接**：否决。既有 `border-l-2` / `border-r-2` 已足够，绝对定位会引入层级与定位上下文风险（2a 已否决过同类）。
+- **切换位置时重置 `isCollapsed`**：否决。用户意图是「挪位置」而非「改开合」，重置会让面板突然弹开/收起，与 2a 的尊重用户意图原则相悖。
+- **本轮顺手把 `LeftColumn` 改名为 `MainColumn`**：否决。任务明确要求等 2c / 轮 3 闭环后统一改名，混入 Rename 会让本轮 diff 无法用 `git status` 的 5 文件口径验收。
+
+
 

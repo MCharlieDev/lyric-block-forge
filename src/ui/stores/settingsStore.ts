@@ -133,6 +133,13 @@ export interface AppSettings {
   snapToLineTimes: boolean
   /** 吸附到刻度尺网格（分目标之一，默认关闭）。 */
   snapToGrid: boolean
+  /**
+   * 右侧侧栏（ActivityBar + 日志面板）的停靠侧。
+   *
+   * 默认 `'right'`；切到 `'left'` 时整组移到主内容列左侧，顺序镜像。
+   * 只影响布局顺序，不影响面板开合状态。
+   */
+  sidebarPosition: 'left' | 'right'
 }
 
 /** 前缀与值之间的合法分隔符：中文冒号 / 英文冒号 / 半角空格 / Tab。 */
@@ -199,6 +206,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   snapToPlayhead: true,
   snapToLineTimes: true,
   snapToGrid: false,
+  sidebarPosition: 'right',
 }
 
 /**
@@ -279,6 +287,10 @@ function normalizeSettings(stored: unknown): AppSettings {
     snapToLineTimes:
       typeof record.snapToLineTimes === 'boolean' ? record.snapToLineTimes : DEFAULT_SETTINGS.snapToLineTimes,
     snapToGrid: typeof record.snapToGrid === 'boolean' ? record.snapToGrid : DEFAULT_SETTINGS.snapToGrid,
+    sidebarPosition:
+      record.sidebarPosition === 'left' || record.sidebarPosition === 'right'
+        ? record.sidebarPosition
+        : DEFAULT_SETTINGS.sidebarPosition,
   }
 }
 
