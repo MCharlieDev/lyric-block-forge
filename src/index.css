@@ -15,3 +15,31 @@ body {
   font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
   overscroll-behavior: none;
 }
+
+/*
+ * 安全区避让（PWA standalone / 刘海屏 / 安卓底部手势条）。
+ *
+ * 只挂在两个最外层容器上，不逐面板撒：
+ * - 顶栏 `#root > div > header`：App 顶栏。PanelFrame 内部也用 <header>，
+ *   所以必须用 id 与层级限定，不能用裸 header 选择器。
+ *   height 与 padding-top 同步加，保证边框盒里留给内容的高度仍是原本的 h-11，
+ *   不会把顶栏内容压扁。
+ * - 内容区 `#root > div > main > div`：ThreeColumnLayout 根节点。
+ *   底部内边距通过 calc 叠加在原有 4px / 12px 之上，不覆盖 Tailwind 的 p-1 / p-3。
+ *
+ * `env(safe-area-inset-*)` 在桌面浏览器恒为 0，因此桌面端视觉零变化。
+ */
+#root > div > header {
+  height: calc(2.75rem + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+}
+
+#root > div > main > div {
+  padding-bottom: calc(0.25rem + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 768px) {
+  #root > div > main > div {
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  }
+}
