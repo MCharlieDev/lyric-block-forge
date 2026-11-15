@@ -10,6 +10,7 @@ import {
   WHEEL_SETTLE_THRESHOLD_PX,
 } from './constants'
 import { clampPixelsPerMs, fitPixelsPerMs, timeToX, xToTime, type TimeView } from './timeMap'
+import { useEditorStore } from '../stores/editorStore'
 
 /**
  * 时间轴同步内核 —— 整套"同生共死"的唯一真相源。
@@ -627,13 +628,51 @@ export function createTimelineViewportKernel(): TimelineViewportKernel {
 }
 
 /**
+ * 当前挂载中的内核实例（模块级桥接）。
+ *
+ * 缩放按钮在 `OperationPanel` 里，而内核实例由 `TimelineStrip` 私有持有（无 Context），
+ * 两者是兄弟组件。为此由 {@link useTimelineViewportKernel} 在挂载 / 卸载时登记 / 注销，
+ * 供 {@link zoomActiveTimeline} 跨组件调用。时间轴未挂载（如桌面端布局）时为 `null`。
+ */
+let activeKernel: TimelineViewportKernel | null = null
+
+/**
+ * 以当前播放头为锚点缩放时间轴（供外部按钮调用）。
+ *
+ * 锚点取播放头，保证缩放时"用户正在看的位置"不跑掉；越出视口则夹紧到边缘。
+ *
+ * 注意：视口左边缘取 `getFrame().view.startMs`，**不是**快照里的 `windowStartMs` ——
+ * 后者是渲染窗口起点（视口左右各外扩一整屏，见 `OVERSCAN_RATIO`），
+ * 用它换算会把锚点整体右移一个屏宽、恒被夹到右边缘。
+ *
+ * @param factor 缩放倍率：>1 放大（每毫秒像素变多），<1 缩小
+ */
+export function zoomActiveTimeline(factor: number): void {
+  const kernel = activeKernel
+  if (kernel === null) return
+  const { view } = kernel.getFrame()
+  const playheadMs = useEditorStore.getState().playback.playheadMs
+  const viewportWidthPx = kernel.getSnapshot().viewportWidthPx
+  const rawXPx = (playheadMs - view.startMs) * view.pixelsPerMs
+  const anchorXPx = Math.min(viewportWidthPx, Math.max(0, rawXPx))
+  kernel.zoomAt(anchorXPx, factor)
+}
+
+/**
  * 创建并持有内核实例（组件卸载时释放）。
  *
  * @returns 内核实例，整个生命周期内引用稳定
  */
 export function useTimelineViewportKernel(): TimelineViewportKernel {
   const [kernel] = useState(createTimelineViewportKernel)
-  useEffect(() => () => kernel.destroy(), [kernel])
+  useEffect(() => {
+    activeKernel = kernel
+    return () => {
+      // 只清自己登记的那一份，避免并发挂载时把别人的实例抹掉
+      if (activeKernel === kernel) activeKernel = null
+      kernel.destroy()
+    }
+  }, [kernel])
   return kernel
 }
 

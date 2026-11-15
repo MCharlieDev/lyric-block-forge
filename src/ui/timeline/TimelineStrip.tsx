@@ -148,6 +148,7 @@ export function TimelineStrip() {
       */}
       <div
         ref={setRootRef}
+        data-timeline-strip
         className="flex min-h-0 min-w-0 flex-[1.4] flex-col overflow-hidden rounded-lg border border-divider bg-panel/50"
       >
         {/*

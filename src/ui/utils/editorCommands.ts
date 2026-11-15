@@ -1,5 +1,5 @@
 import type { AdapterContext } from '@adapters'
-import { getReplayedWordTime } from '@core'
+import { createId, getReplayedWordTime, type AudioAsset } from '@core'
 import { lineIsMovable, selectVisibleLines, useEditorStore } from '../stores/editorStore'
 import { showToast } from '../stores/toastStore'
 
@@ -437,4 +437,76 @@ export function removeSelectedLines(): void {
   const store = useEditorStore.getState()
   if (store.selection.lineIds.length === 0) return
   store.removeLines(store.selection.lineIds)
+}
+
+/** 常见的伴奏文件扩展名（音频导入文件选择器的过滤器）。 */
+const AUDIO_FILTER = { name: '音频文件', extensions: ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg'] }
+
+/**
+ * 导入音频文件（顶栏导入下拉与波形区空状态蒙版共用）。
+ *
+ * 全流程收在这一处，避免两个入口各写一遍：
+ * 选文件 → `audio.load` 解码 → 回填 `durationMs` / `sampleRate` / `channelCount`
+ * → `attachAudio` 落 store → 后台建峰值金字塔（不阻塞播放）。
+ *
+ * 失败统一在这里转成 toast：调用方是图标与蒙版这类无文案宿主，
+ * 界面层不再各自维护一份错误状态。
+ *
+ * @param adapters 平台能力集合
+ * @param file 拖拽进来的文件；传了就跳过文件选择器，直接用该文件
+ */
+export async function importAudioCommand(adapters: AdapterContext, file?: File): Promise<void> {
+  try {
+    const content =
+      file === undefined
+        ? await adapters.file.openAudioFile({ filters: [AUDIO_FILTER] })
+        : {
+            // 与 `web/file.ts` 的 `openAudioFile` 同构：uri 用 object URL，
+            // 由 `AudioPort.load` 解码后在 finally 里自行 revoke
+            ref: {
+              name: file.name,
+              uri: URL.createObjectURL(file),
+              sizeBytes: file.size,
+              mimeType: file.type === '' ? null : file.type,
+            },
+            data: file,
+          }
+    if (content === null) return
+
+    const draft: AudioAsset = {
+      id: createId('audio'),
+      source: {
+        // 文件端口把 object URL 作为 uri，音频端口解码后会自行 revoke
+        kind: 'object-url',
+        uri: content.ref.uri,
+        name: content.ref.name,
+        mimeType: content.ref.mimeType,
+        sizeBytes: content.ref.sizeBytes,
+      },
+      durationMs: 0,
+      sampleRate: 0,
+      channelCount: 0,
+      waveformCacheKey: null,
+      fingerprint: null,
+      analysis: null,
+    }
+
+    await adapters.audio.load(draft)
+    const spec = adapters.audio.getSpec()
+    const asset: AudioAsset =
+      spec === null
+        ? draft
+        : {
+            ...draft,
+            durationMs: Math.round(spec.durationMs),
+            sampleRate: spec.sampleRate,
+            channelCount: spec.channelCount,
+          }
+    useEditorStore.getState().attachAudio(asset)
+    // 峰值金字塔在后台建，不阻塞播放；建好后波形层会收到通知重绘
+    void adapters.audio.preparePeaks()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    showToast(`导入音频失败：${message}`)
+  }
 }

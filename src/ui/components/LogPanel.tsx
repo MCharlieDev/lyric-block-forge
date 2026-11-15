@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { getLifecycleHistory, type OperationDelta, type OperationLogEntry, type OperationKind } from '@core'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { getLifecycleHistory, type OperationDelta, type OperationLogEntry } from '@core'
 import {
-  ARCHIVED_DISPLAY_LABEL,
   LOG_TAB_EMPTY_HINT,
   LOG_TABS,
   OPERATION_KIND_LABEL,
   OPERATION_STATUS_LABEL,
 } from '../labels'
-import { selectVisibleEntries, useEditorStore, type ArchivedDisplay } from '../stores/editorStore'
+import { selectVisibleEntries, useEditorStore } from '../stores/editorStore'
+import { showToast } from '../stores/toastStore'
 import { formatLogTime, formatOffset, formatTimecode } from '../utils/format'
+import { LogFilterPopover } from './LogFilterPopover'
 import { PanelFrame } from './PanelFrame'
 
 /**
@@ -32,9 +33,8 @@ export function LogPanel() {
   const logView = useEditorStore((state) => state.logView)
   const selectedEntryIds = useEditorStore((state) => state.selection.entryIds)
   const setLogTab = useEditorStore((state) => state.setLogTab)
-  const setArchivedDisplay = useEditorStore((state) => state.setArchivedDisplay)
-  const patchLogFilter = useEditorStore((state) => state.patchLogFilter)
   const toggleEntrySelection = useEditorStore((state) => state.toggleEntrySelection)
+  const selectEntries = useEditorStore((state) => state.selectEntries)
   const clearEntrySelection = useEditorStore((state) => state.clearEntrySelection)
   const toggleEntryExpanded = useEditorStore((state) => state.toggleEntryExpanded)
   const openArchivedEntry = useEditorStore((state) => state.openArchivedEntry)
@@ -46,9 +46,35 @@ export function LogPanel() {
   const entries = useMemo(() => selectVisibleEntries(log, logView), [log, logView])
 
   const listRef = useRef<HTMLDivElement>(null)
-  const activeKinds = Array.from(new Set(log.entries.map((entry) => entry.kind)))
-  const statusFilter = logView.filter.statuses?.[0] ?? 'all'
+  const [filterOpen, setFilterOpen] = useState(false)
   const isArchivedTab = logView.tab === 'archived'
+
+  // 圆点只反映「当前页签真正生效」的筛选：状态与已撤销显示仅「总」页签有意义
+  const isFilterActive =
+    Boolean(logView.filter.kinds) ||
+    (logView.tab === 'all' &&
+      (Boolean(logView.filter.statuses) || logView.archivedDisplay !== 'thin'))
+
+  // 「细行」判定与传给行组件的 `thin` 同源，全选口径直接复用，避免两处逻辑漂移
+  const showsThinRows = logView.tab === 'all' && logView.archivedDisplay === 'thin'
+  const isThinEntry = (entry: OperationLogEntry): boolean =>
+    showsThinRows && entry.status === 'undone'
+  // 全选只覆盖「当前筛选下可见且有勾选框」的条目：细行没有 checkbox，必须排除
+  const selectableIds = entries.filter((entry) => !isThinEntry(entry)).map((entry) => entry.id)
+  const allSelected =
+    selectableIds.length > 0 && selectableIds.every((id) => selectedEntryIds.includes(id))
+  const someSelected =
+    !allSelected && selectableIds.some((id) => selectedEntryIds.includes(id))
+  const selectAllRef = useRef<HTMLInputElement>(null)
+
+  // indeterminate 是 DOM 属性、不是受控属性，只能命令式同步
+  useEffect(() => {
+    if (selectAllRef.current !== null) selectAllRef.current.indeterminate = someSelected
+  }, [someSelected])
+
+  const handleUndoLast = (): void => {
+    if (!undoLastAction()) showToast('没有可撤销的记录')
+  }
 
   // 从"总"页签细行跳过来时滚动定位一次，避免记录在长列表里看不见。
   // 焦点高亮会一直保留到切页签，这样用户能看清到底跳到了哪一条。
@@ -63,15 +89,6 @@ export function LogPanel() {
       title="工作日志"
       hint="随文档保存"
       className="flex-1"
-      actions={
-        <button
-          type="button"
-          onClick={undoLastAction}
-          className="rounded border border-divider px-2 py-0.5 text-[11px] text-neutral-300 hover:border-accent/60 hover:text-accent"
-        >
-          撤销最后一条
-        </button>
-      }
     >
       <div className="flex h-full flex-col">
         {/* 页签 */}
@@ -92,75 +109,103 @@ export function LogPanel() {
           ))}
         </nav>
 
-        {/* 筛选区 */}
-        <div className="shrink-0 space-y-1.5 border-b border-divider px-2 py-2">
-          <div className="flex items-center gap-1">
-            <span className="w-10 text-[11px] text-neutral-600">状态</span>
-            {(['all', 'active', 'undone'] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() =>
-                  patchLogFilter({ statuses: value === 'all' ? undefined : [value] })
-                }
-                className={`rounded px-1.5 py-0.5 text-[11px] ${
-                  statusFilter === value
-                    ? 'bg-accent/20 text-accent'
-                    : 'text-neutral-500 hover:text-neutral-300'
-                }`}
-              >
-                {value === 'all' ? '全部' : value === 'active' ? '只看生效' : '只看已撤销'}
-              </button>
-            ))}
-          </div>
-
-          {/* 只有"总"页签同时装着生效与已撤销两种记录，才需要这个显示模式开关 */}
-          {logView.tab === 'all' ? (
-            <div className="flex items-center gap-1">
-              <span className="w-10 text-[11px] text-neutral-600">已撤销</span>
-              {(['thin', 'hidden', 'normal'] as const).map((mode: ArchivedDisplay) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => setArchivedDisplay(mode)}
-                  className={`rounded px-1.5 py-0.5 text-[11px] ${
-                    logView.archivedDisplay === mode
-                      ? 'bg-accent/20 text-accent'
-                      : 'text-neutral-500 hover:text-neutral-300'
-                  }`}
-                >
-                  {ARCHIVED_DISPLAY_LABEL[mode]}
-                </button>
-              ))}
-            </div>
-          ) : null}
-
-          <div className="flex items-start gap-1">
-            <span className="w-10 shrink-0 pt-0.5 text-[11px] text-neutral-600">类型</span>
-            <div className="flex flex-wrap gap-1">
+        {/* 头部：全选 + 撤销 / 计数 + 筛选，全部收在一行 */}
+        <div
+          data-log-header
+          className="flex shrink-0 items-center gap-2 border-b border-divider px-3 py-1.5"
+        >
+          <label className="flex items-center gap-1.5 text-[11px] text-neutral-400">
+            <input
+              ref={selectAllRef}
+              type="checkbox"
+              data-select-all
+              checked={allSelected}
+              aria-checked={someSelected ? 'mixed' : undefined}
+              onChange={(event) => {
+                if (event.target.checked) selectEntries(selectableIds)
+                else clearEntrySelection()
+              }}
+              className="h-3 w-3 accent-accent"
+            />
+            全选
+          </label>
+          <div className="ml-auto flex items-center gap-2">
+            {selectedEntryIds.length === 0 ? (
               <button
                 type="button"
-                onClick={() => patchLogFilter({ kinds: undefined })}
-                className={`rounded px-1.5 py-0.5 text-[11px] ${
-                  logView.filter.kinds ? 'text-neutral-500 hover:text-neutral-300' : 'bg-accent/20 text-accent'
+                data-undo-last
+                title="撤销最后一步 (Ctrl+Z)"
+                onClick={handleUndoLast}
+                className="rounded border border-divider px-2 py-0.5 text-[11px] text-neutral-300 hover:border-accent/60 hover:text-accent"
+              >
+                撤销
+              </button>
+            ) : (
+              <>
+                <span data-selection-count className="text-[11px] text-neutral-600">
+                  已选 {selectedEntryIds.length} 条
+                </span>
+                {isArchivedTab ? (
+                  <button
+                    type="button"
+                    data-restore-selected
+                    onClick={restoreSelectedEntries}
+                    className="rounded border border-divider px-2 py-0.5 text-[11px] text-neutral-300 hover:border-accent/60 hover:text-accent"
+                  >
+                    恢复所选
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    data-undo-selected
+                    onClick={undoSelectedEntries}
+                    className="rounded border border-divider px-2 py-0.5 text-[11px] text-neutral-300 hover:border-accent/60 hover:text-accent"
+                  >
+                    撤销所选
+                  </button>
+                )}
+                <button
+                  type="button"
+                  data-clear-selection
+                  onClick={clearEntrySelection}
+                  className="text-[11px] text-neutral-600 hover:text-neutral-400"
+                >
+                  清空
+                </button>
+              </>
+            )}
+            {/* 筛选：与全选 / 撤销共用一行；弹层为卡内下拉，不受卡片边界裁切 */}
+            <div className="relative ml-1 shrink-0">
+              <button
+                type="button"
+                data-log-filter-toggle
+                title="筛选"
+                onClick={() => setFilterOpen((open) => !open)}
+                className={`relative rounded border px-2 py-0.5 text-[11px] max-md:px-3 max-md:py-1.5 max-md:text-sm ${
+                  isFilterActive
+                    ? 'border-accent/60 text-accent'
+                    : 'border-divider text-neutral-400 hover:text-neutral-300'
                 }`}
               >
-                全部
+                筛选 ▾
+                {isFilterActive ? (
+                  <span
+                    data-filter-dot
+                    className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-accent"
+                  />
+                ) : null}
               </button>
-              {activeKinds.map((kind: OperationKind) => (
-                <button
-                  key={kind}
-                  type="button"
-                  onClick={() => patchLogFilter({ kinds: [kind] })}
-                  className={`rounded px-1.5 py-0.5 text-[11px] ${
-                    logView.filter.kinds?.includes(kind)
-                      ? 'bg-accent/20 text-accent'
-                      : 'text-neutral-500 hover:text-neutral-300'
-                  }`}
-                >
-                  {OPERATION_KIND_LABEL[kind]}
-                </button>
-              ))}
+              {filterOpen ? (
+                <>
+                  <button
+                    type="button"
+                    aria-label="关闭筛选"
+                    onClick={() => setFilterOpen(false)}
+                    className="fixed inset-0 z-10 cursor-default bg-black/40 md:bg-transparent"
+                  />
+                  <LogFilterPopover onClose={() => setFilterOpen(false)} />
+                </>
+              ) : null}
             </div>
           </div>
         </div>
@@ -178,11 +223,7 @@ export function LogPanel() {
                   key={entry.id}
                   entry={entry}
                   archivedTab={isArchivedTab}
-                  thin={
-                    logView.tab === 'all' &&
-                    entry.status === 'undone' &&
-                    logView.archivedDisplay === 'thin'
-                  }
+                  thin={isThinEntry(entry)}
                   selected={selectedEntryIds.includes(entry.id)}
                   highlighted={logView.focusEntryId === entry.id}
                   expanded={logView.expandedEntryIds.includes(entry.id)}
@@ -193,39 +234,6 @@ export function LogPanel() {
               ))}
             </ul>
           )}
-        </div>
-
-        {/* 批量操作 */}
-        <div className="flex shrink-0 items-center gap-2 border-t border-divider px-2 py-2">
-          <span className="text-[11px] text-neutral-600">已选 {selectedEntryIds.length} 条</span>
-          {isArchivedTab ? (
-            <button
-              type="button"
-              disabled={selectedEntryIds.length === 0}
-              onClick={restoreSelectedEntries}
-              className="rounded border border-divider px-2 py-0.5 text-[11px] text-neutral-300 enabled:hover:border-accent/60 enabled:hover:text-accent disabled:opacity-40"
-            >
-              恢复所选
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={selectedEntryIds.length === 0}
-              onClick={undoSelectedEntries}
-              className="rounded border border-divider px-2 py-0.5 text-[11px] text-neutral-300 enabled:hover:border-accent/60 enabled:hover:text-accent disabled:opacity-40"
-            >
-              批量撤销
-            </button>
-          )}
-          {selectedEntryIds.length > 0 ? (
-            <button
-              type="button"
-              onClick={clearEntrySelection}
-              className="text-[11px] text-neutral-600 hover:text-neutral-400"
-            >
-              清空选择
-            </button>
-          ) : null}
         </div>
       </div>
     </PanelFrame>

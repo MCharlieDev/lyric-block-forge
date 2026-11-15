@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AudioPeakState } from '@adapters'
 import { useAdapters } from '../context/AdapterContext'
+import { useEditorStore } from '../stores/editorStore'
+import { importAudioCommand } from '../utils/editorCommands'
 import { GRID_MIN_GAP_PX, WAVEFORM_HEIGHT_PX } from './constants'
 import { adaptiveGridMs, timeToX } from './timeMap'
 import { useTimelineSnapshot, type TimelineFrame } from './useTimelineViewport'
@@ -25,6 +27,7 @@ export function WaveformLayer() {
   const adapters = useAdapters()
   const { kernel } = useTimelineViewportContext()
   const snapshot = useTimelineSnapshot(kernel)
+  const audioAsset = useEditorStore((state) => state.audioAsset)
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -146,6 +149,22 @@ export function WaveformLayer() {
   return (
     <div ref={containerRef} className="relative min-h-0 flex-1 bg-panel/25">
       <canvas ref={canvasRef} className="block h-full w-full" />
+      {/* 空状态：没有音频时在波形区正中给出唯一入口（顶栏不再重复「未加载音频」文字） */}
+      {audioAsset === null ? (
+        <div
+          data-wave-empty
+          className="pointer-events-none absolute inset-0 flex items-center justify-center bg-canvas/60 backdrop-blur-[2px]"
+        >
+          <button
+            type="button"
+            data-wave-import
+            onClick={() => void importAudioCommand(adapters)}
+            className="pointer-events-auto rounded-full border border-divider bg-panel/80 px-4 py-1.5 text-xs text-neutral-400 shadow-sm transition-colors hover:border-accent/60 hover:text-accent"
+          >
+            未加载音频 · 点击导入
+          </button>
+        </div>
+      ) : null}
       {placeholder !== null ? (
         <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-[11px] text-neutral-500">
           {placeholder}

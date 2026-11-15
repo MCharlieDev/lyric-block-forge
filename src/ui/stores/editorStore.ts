@@ -382,8 +382,13 @@ export interface EditorState {
    */
   appendBlankLine: (text?: string, afterLineId?: string) => string
 
-  /** 撤销最后一条可撤销记录 */
-  undoLastAction: () => void
+  /**
+   * 撤销最后一条可撤销记录。
+   *
+   * @returns 是否真的撤销了一条；无合法目标时返回 `false` 且不写任何 state，
+   *   供 UI 决定是否提示「没有可撤销的记录」
+   */
+  undoLastAction: () => boolean
   /** 按类型撤销（分级回退） */
   undoByKindAction: (kind: OperationKind) => void
   /** 批量撤销选中的记录 */
@@ -392,6 +397,8 @@ export interface EditorState {
   restoreSelectedEntries: () => void
   /** 切换一条日志记录的选中态 */
   toggleEntrySelection: (entryId: string) => void
+  /** 批量选中（供全选使用）；只改 `entryIds`，不切页签、不清筛选 */
+  selectEntries: (ids: string[]) => void
   /** 清空日志选择 */
   clearEntrySelection: () => void
   /** 折叠 / 展开一条记录的详情 */
@@ -1283,9 +1290,14 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 
   undoLastAction: () => {
     const { log, document, selection } = get()
+    // 与 core `undoLast` 同口径：只认「生效中且可撤销」的记录。
+    // 没有目标时不写 state，把「是否撤销成功」交给调用方决定要不要提示。
+    const hasTarget = log.entries.some((entry) => entry.status === 'active' && isRevertable(entry.kind))
+    if (!hasTarget) return false
     const next = undoLast(log)
     const nextReplay = computeReplay(document, next)
     set({ log: next, replay: nextReplay, selection: reconcileSelectionAfterUndo(document, nextReplay, selection) })
+    return true
   },
 
   undoByKindAction: (kind) => {
@@ -1328,6 +1340,11 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   },
 
   clearEntrySelection: () => set({ selection: { ...get().selection, entryIds: [] } }),
+
+  selectEntries: (ids) => {
+    // 去重但保持传入顺序（全选按列表顺序传入，计数与后续撤销都依赖这个顺序稳定）
+    set({ selection: { ...get().selection, entryIds: Array.from(new Set(ids)) } })
+  },
 
   toggleEntryExpanded: (entryId) => {
     const { expandedEntryIds } = get().logView

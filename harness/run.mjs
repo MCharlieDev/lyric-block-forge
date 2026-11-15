@@ -651,12 +651,12 @@ const BOOTSTRAP = `
         var r = el.getBoundingClientRect();
         return { left: r.left, top: r.top, width: r.width, height: r.height, right: r.right, bottom: r.bottom, x: r.left + r.width / 2, y: r.top + r.height / 2 };
       },
+      // 顶栏三个图标都是纯图标（无文字），一律按 data-* 契约定位
       importAudioButtonRect: function () {
-        var btns = document.querySelectorAll('button');
-        for (var i = 0; i < btns.length; i++) {
-          if ((btns[i].textContent || '').trim().indexOf('导入音频') >= 0) return api._rectOf(btns[i]);
-        }
-        return null;
+        return api._rectOf(document.querySelector('[data-topbar-import]'));
+      },
+      importAudioMenuRect: function () {
+        return api._rectOf(document.querySelector('[data-import-audio]'));
       },
       rulerRect: function () {
         var cs = document.querySelectorAll('canvas');
@@ -739,11 +739,10 @@ const BOOTSTRAP = `
       },
       // ---- 设置面板（固定搜索框 / 滚动内容区 / 固定 footer） ----
       openSettings: function () {
-        var btns = document.querySelectorAll('button');
-        for (var i = 0; i < btns.length; i++) {
-          if ((btns[i].textContent || '').trim() === '设置') { btns[i].click(); return true; }
-        }
-        return false;
+        var btn = document.querySelector('[data-topbar-settings]');
+        if (btn === null) return false;
+        btn.click();
+        return true;
       },
       settingsPanelEl: function () { return document.querySelector('[data-settings-panel]'); },
       settingsPanelRect: function () { return api._rectOf(api.settingsPanelEl()); },
@@ -1057,16 +1056,29 @@ function ensureSilenceWav() {
   return WAV_PATH
 }
 
-/** 点「导入音频」→ 拦截文件选择框 → 塞入静音 WAV（真实 decode 路径）。 */
+/**
+ * 点顶栏「导入」图标 → 二级菜单「导入音频文件」→ 拦截文件选择框 →
+ * 塞入静音 WAV（真实 decode 路径）。
+ *
+ * 顶栏已统一为纯图标 + 二级下拉，所以必须两次点击：先开菜单、再点条目。
+ */
 async function importAudio(cdp) {
   ensureSilenceWav()
   const rect = await ev(cdp, '__lrc.importAudioButtonRect()')
   if (!rect) throw new Error('import audio button not found')
   const x = Math.round(rect.x)
   const y = Math.round(rect.y)
-  const chooser = cdp.waitEvent('Page.fileChooserOpened', 12000).catch(() => null)
   await mouse(cdp, 'mousePressed', x, y, { buttons: 1 })
   await mouse(cdp, 'mouseReleased', x, y, { buttons: 0 })
+  await sleep(100)
+
+  const itemRect = await ev(cdp, '__lrc.importAudioMenuRect()')
+  if (!itemRect) throw new Error('import audio menu item not found')
+  const ix = Math.round(itemRect.x)
+  const iy = Math.round(itemRect.y)
+  const chooser = cdp.waitEvent('Page.fileChooserOpened', 12000).catch(() => null)
+  await mouse(cdp, 'mousePressed', ix, iy, { buttons: 1 })
+  await mouse(cdp, 'mouseReleased', ix, iy, { buttons: 0 })
   const params = await chooser
   if (params && params.backendNodeId) {
     await cdp.send('DOM.setFileInputFiles', { files: [WAV_PATH], backendNodeId: params.backendNodeId })
@@ -1148,6 +1160,70 @@ function moveTo(cdp, x, y, modifiers = 0) {
 }
 function releaseAt(cdp, x, y, modifiers = 0) {
   return mouse(cdp, 'mouseReleased', x, y, { buttons: 0, modifiers })
+}
+
+/**
+ * 在底部抽屉把手中心按住并向下拖 `dy` 像素后松手。
+ *
+ * 必须走 CDP 真实鼠标事件：合成 `PointerEvent` + `setPointerCapture` 会抛
+ * `InvalidPointerId`，只有 trusted 事件能驱动把手拖拽与吸附。
+ */
+async function dragSheetDown(cdp, dy, steps = 6) {
+  const start = await ev(
+    cdp,
+    `(function(){
+      var el = document.querySelector('[data-sheet-handle]');
+      if (el === null) return null;
+      var b = el.getBoundingClientRect();
+      return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+    })()`,
+  )
+  if (start === null) return { dragged: false }
+  const x = Math.round(start.x)
+  const y0 = Math.round(start.y)
+  await pressAt(cdp, x, y0)
+  await sleep(30)
+  for (let i = 1; i <= steps; i += 1) {
+    await moveTo(cdp, x, Math.round(y0 + (dy * i) / steps))
+    await sleep(25)
+  }
+  await releaseAt(cdp, x, Math.round(y0 + dy))
+  // 等 200ms 吸附动画 / 关闭后的卸载
+  await sleep(300)
+  return { dragged: true, x, y0 }
+}
+
+/**
+ * 按住高度分割线中心拖动 `dy` 像素后松手。
+ *
+ * 同样必须走 CDP 真实鼠标事件（分割线也调了 `setPointerCapture`）。
+ * 目标点会被夹进视口内：CDP 对视口外坐标不可靠，猛拖到边界需要调用多次，
+ * 每次都从分割线的新位置重新起按，位移会自然累加。
+ */
+async function dragSplitter(cdp, dy, steps = 6) {
+  const start = await ev(
+    cdp,
+    `(function(){
+      var el = document.querySelector('[data-column-splitter]');
+      if (el === null) return null;
+      var b = el.getBoundingClientRect();
+      return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+    })()`,
+  )
+  if (start === null) return { dragged: false }
+  const innerHeight = await ev(cdp, 'window.innerHeight')
+  const x = Math.round(start.x)
+  const y0 = Math.round(start.y)
+  const yEnd = Math.min(innerHeight - 2, Math.max(2, Math.round(y0 + dy)))
+  await pressAt(cdp, x, y0)
+  await sleep(30)
+  for (let i = 1; i <= steps; i += 1) {
+    await moveTo(cdp, x, Math.round(y0 + ((yEnd - y0) * i) / steps))
+    await sleep(25)
+  }
+  await releaseAt(cdp, x, yEnd)
+  await sleep(150)
+  return { dragged: true, x, y0, yEnd }
 }
 
 /** 相邻去重后的采样序列（只看落在 [lo, hi] 的值），用于数"中间值个数"。 */
@@ -3803,9 +3879,16 @@ async function testBH(cdp, checks) {
   await sleep(60)
 
   // c. TextImportDialog：textarea 参与回环（本轮缺陷锁）
-  const openedC = await ev(cdp, `__lrc.clickButtonText('导入 LRC')`)
+  // 顶栏已改为纯图标 + 二级下拉，入口按 data-* 契约点两次
+  const openedC = await ev(
+    cdp,
+    `(function(){var b=document.querySelector('[data-topbar-import]');if(b===null)return false;b.click();return true})()`,
+  )
   await sleep(80)
-  const menuC = await ev(cdp, `__lrc.clickButtonText('手动输入')`)
+  const menuC = await ev(
+    cdp,
+    `(function(){var b=document.querySelector('[data-import-manual]');if(b===null)return false;b.click();return true})()`,
+  )
   await sleep(80)
   const openC = await ev(cdp, `!!document.querySelector('[role="dialog"][aria-label="手动输入歌词"]')`)
   assert(
@@ -4505,9 +4588,15 @@ async function testBL(cdp, checks) {
  * 手搓 zip fixture，成本高且解析细节（表格 / 文本框）靠人工目测，故不做。
  */
 async function testBM(cdp, checks) {
-  const opened = await ev(cdp, `__lrc.clickButtonText('导入 LRC')`)
+  const opened = await ev(
+    cdp,
+    `(function(){var b=document.querySelector('[data-topbar-import]');if(b===null)return false;b.click();return true})()`,
+  )
   await sleep(60)
-  const clicked = await ev(cdp, `__lrc.clickButtonText('导入 LRC / 文本 / Word')`)
+  const clicked = await ev(
+    cdp,
+    `(function(){var b=document.querySelector('[data-import-text]');if(b===null)return false;b.click();return true})()`,
+  )
   await sleep(80)
 
   const accept = await ev(
@@ -4546,29 +4635,8 @@ async function testBN(cdp, checks) {
   const NARROW = { width: 375, height: 667, deviceScaleFactor: 1, mobile: true }
   const DESKTOP = { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }
 
-  // 窄屏 ⋯ 菜单里的四个入口文案。桌面控件组在窄屏只是 display:none、DOM 仍在，
-  // 所以这里区分 `visible`（有渲染盒）与 `all`（DOM 中存在），
-  // 断言「关闭时不可见」+「菜单专属文案完全不在 DOM」两件事。
-  const MORE_TEXTS = ['导入歌词…', '导出 LRC', '导入音频', '设置']
-  // 用前缀匹配而不是全等：「导入歌词…」按钮里还含一个 ▸/▾ 箭头 span，
-  // 全等匹配会永久命中不到，导致「关闭时不在 DOM」这条断言空转。
-  const scanMoreEntries = `(function(){
-      var texts = ${JSON.stringify(MORE_TEXTS)};
-      var buttons = document.querySelectorAll('button');
-      var visible = [];
-      var all = [];
-      for (var i = 0; i < buttons.length; i++) {
-        var t = (buttons[i].textContent || '').trim();
-        var hit = false;
-        for (var k = 0; k < texts.length; k++) {
-          if (t.indexOf(texts[k]) === 0) { hit = true; break; }
-        }
-        if (!hit) continue;
-        all.push(t);
-        if (buttons[i].getClientRects().length > 0) visible.push(t);
-      }
-      return { visible: visible, all: all };
-    })()`
+  // 窄屏不再有 ⋯ 菜单：顶栏与桌面同构，只有三个纯图标 + 二级下拉。
+  // 图标没有可见文字，只能按 `data-*` 契约定位。
 
   try {
     await cdp.send('Emulation.setDeviceMetricsOverride', NARROW)
@@ -4625,49 +4693,198 @@ async function testBN(cdp, checks) {
     // 版本的亚像素差异导致假红；BN.a 的 `<= 767` 保持原样不动。
     assert(checks, 'BN.g 窄屏 layout viewport 未被内容撑宽（innerWidth ≤ 380）', narrow.innerWidth <= 380, J(narrow.innerWidth))
 
-    const closedEntries = await ev(cdp, scanMoreEntries)
-    assert(
-      checks,
-      'BN.h ⋯ 菜单关闭时四个入口均不可见',
-      closedEntries.visible.length === 0,
-      J(closedEntries),
-    )
-    assert(
-      checks,
-      'BN.h.2 菜单专属文案「导入歌词…」关闭时不在 DOM',
-      closedEntries.all.indexOf('导入歌词…') < 0,
-      J(closedEntries.all),
-    )
-
-    // 点 ⋯ 开菜单 → 断言入口出现 → Esc 关闭 → 断言入口消失。
-    // 用 title 选择器而不是文本匹配，避免与「⋯」这类非 ASCII 文案互相牵扯。
-    const clickMore = await ev(
+    // 窄屏顶栏与桌面同构：三个纯图标常在，二级下拉默认不进 DOM。
+    const closedMenu = await ev(
       cdp,
       `(function(){
-        var btn = document.querySelector('[title="更多"]');
+        return {
+          importIcon: document.querySelector('[data-topbar-import]') !== null,
+          exportIcon: document.querySelector('[data-topbar-export]') !== null,
+          settingsIcon: document.querySelector('[data-topbar-settings]') !== null,
+          menuItem: document.querySelector('[data-import-audio]') !== null,
+          leftTitleVisible: (function(){
+            var h = document.querySelector('header h1');
+            return h !== null && h.getClientRects().length > 0;
+          })(),
+          leftTitleText: (function(){
+            var h = document.querySelector('header h1');
+            return h === null ? null : (h.textContent || '');
+          })(),
+          // 左侧其余三件（竖线 / 歌名 / 行数）都没有 data-* 契约，按直接子 span
+          // 的可见性收集：窄屏应当一个都不渲染出来。
+          leftExtrasVisible: (function(){
+            var spans = document.querySelectorAll('header > span');
+            var shown = [];
+            for (var i = 0; i < spans.length; i++) {
+              var text = (spans[i].textContent || '').trim();
+              if (text === '') continue;
+              if (spans[i].getClientRects().length > 0) shown.push(text);
+            }
+            return shown;
+          })()
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BN.h 窄屏顶栏保留 Logo（含「LRC」）、隐藏歌名 / 行数 / 竖线，且三个图标常在',
+      closedMenu.importIcon === true &&
+        closedMenu.exportIcon === true &&
+        closedMenu.settingsIcon === true &&
+        closedMenu.leftTitleVisible === true &&
+        typeof closedMenu.leftTitleText === 'string' &&
+        closedMenu.leftTitleText.indexOf('LRC') >= 0 &&
+        closedMenu.leftExtrasVisible.length === 0,
+      J(closedMenu),
+    )
+    assert(
+      checks,
+      'BN.h.2 窄屏下拉条目默认不在 DOM',
+      closedMenu.menuItem === false,
+      J(closedMenu.menuItem),
+    )
+
+    // 点「导入」图标 → 断言三个条目可见 → 再点图标收起 → 断言条目消失。
+    const clickImport = await ev(
+      cdp,
+      `(function(){
+        var btn = document.querySelector('[data-topbar-import]');
         if (btn === null) return { clicked: false };
         btn.click();
         return { clicked: true };
       })()`,
     )
     await sleep(150)
-    const openedEntries = await ev(cdp, scanMoreEntries)
+    const openedEntries = await ev(
+      cdp,
+      `(function(){
+        var keys = ['audio', 'text', 'manual'];
+        var visible = [];
+        for (var i = 0; i < keys.length; i++) {
+          var el = document.querySelector('[data-import-' + keys[i] + ']');
+          if (el !== null && el.getClientRects().length > 0) visible.push(keys[i]);
+        }
+        return { visible: visible };
+      })()`,
+    )
     assert(
       checks,
-      'BN.i 点 ⋯ 后菜单展开（入口可见）',
-      clickMore.clicked === true && openedEntries.visible.length > 0,
-      J({ clickMore, openedEntries }),
+      'BN.i 点「导入」图标后下拉展开（三个条目可见）',
+      clickImport.clicked === true && openedEntries.visible.length === 3,
+      J({ clickImport, openedEntries }),
     )
 
-    await keyPress(cdp, 'Escape', 'Escape', 27)
+    await ev(
+      cdp,
+      `(function(){var b=document.querySelector('[data-topbar-import]');if(b!==null)b.click();return true})()`,
+    )
     await sleep(150)
-    const escapedEntries = await ev(cdp, scanMoreEntries)
+    const collapsedEntries = await ev(
+      cdp,
+      `(function(){return {exists: document.querySelector('[data-import-audio]') !== null}})()`,
+    )
     assert(
       checks,
-      'BN.j 按 Esc 后菜单关闭（入口不再可见）',
-      escapedEntries.visible.length === 0 && escapedEntries.all.indexOf('导入歌词…') < 0,
-      J(escapedEntries),
+      'BN.j 再点「导入」图标后下拉收起（条目不再进 DOM）',
+      collapsedEntries.exists === false,
+      J(collapsedEntries),
     )
+
+    // 2d-1a：移动端底部工具栏骨架（流内 flex 子项，非 fixed）。
+    // 用 data-mobile-toolbar 定位，避免与 ActivityBar 的 title 探针互相牵扯。
+    const narrowToolbar = await ev(
+      cdp,
+      `(function(){
+        var bar = document.querySelector('[data-mobile-toolbar]');
+        var r = bar ? __lrc._rectOf(bar) : null;
+        return {
+          exists: bar !== null,
+          visible: bar !== null && bar.getClientRects().length > 0,
+          buttons: bar ? bar.querySelectorAll('button').length : 0,
+          bottom: r ? r.bottom : null,
+          innerHeight: window.innerHeight
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BN.k 窄屏渲染底部工具栏且两个按钮可见',
+      narrowToolbar.visible === true && narrowToolbar.buttons === 2,
+      J(narrowToolbar),
+    )
+    // 根节点 p-1（4px）把底栏从视口底缘托起，故留 5px 容差
+    assert(
+      checks,
+      'BN.m 底部工具栏贴近视口底缘（含根节点 4px 留白）',
+      narrowToolbar.bottom !== null && Math.abs(narrowToolbar.innerHeight - narrowToolbar.bottom) <= 5,
+      J(narrowToolbar),
+    )
+
+    // 占位反馈：点击后由全局 ToastHost 渲染 role=status，文案在卡片内。
+    const clickToolbarButton = async (title) => {
+      const clicked = await ev(
+        cdp,
+        `(function(){
+          var btn = document.querySelector('[data-mobile-toolbar] button[title="${title}"]');
+          if (btn === null) return { clicked: false };
+          btn.click();
+          return { clicked: true };
+        })()`,
+      )
+      await sleep(150)
+      const toast = await ev(
+        cdp,
+        `(function(){
+          var el = document.querySelector('[role="status"]');
+          return { text: el ? (el.textContent || '').trim() : null };
+        })()`,
+      )
+      return { clicked, toast }
+    }
+
+    const logFeedback = await clickToolbarButton('日志')
+    const logSheet = await ev(
+      cdp,
+      `(function(){
+        return {
+          panel: document.querySelector('[data-sheet-panel]') !== null,
+          backdrop: document.querySelector('[data-sheet-backdrop]') !== null
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BN.n 点「日志」打开底部抽屉（面板出现、无遮罩）',
+      logFeedback.clicked.clicked === true &&
+        logSheet.panel === true &&
+        logSheet.backdrop === false,
+      J({ clicked: logFeedback.clicked, logSheet }),
+    )
+    // 关掉抽屉，避免面板干扰后续「操作」按钮的断言；无遮罩后只能拖把手关闭
+    await dragSheetDown(cdp, 500)
+
+    const actionFeedback = await clickToolbarButton('操作')
+    const opSheet = await ev(
+      cdp,
+      `(function(){
+        return {
+          panel: document.querySelector('[data-sheet-panel]') !== null,
+          backdrop: document.querySelector('[data-sheet-backdrop]') !== null,
+          opPanel: document.querySelector('[data-operation-panel]') !== null
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BN.o 点「操作」打开操作面板（面板出现、无遮罩）',
+      actionFeedback.clicked.clicked === true &&
+        opSheet.panel === true &&
+        opSheet.backdrop === false &&
+        opSheet.opPanel === true,
+      J({ clicked: actionFeedback.clicked, opSheet }),
+    )
+    // 关掉抽屉，避免面板干扰后续断言
+    await dragSheetDown(cdp, 500)
   } finally {
     // 断言失败 / 抛错也必须还原桌面视口，否则后续组全部跑在手机视口里
     await cdp.send('Emulation.setDeviceMetricsOverride', DESKTOP)
@@ -4701,6 +4918,1096 @@ async function testBN(cdp, checks) {
         Math.abs(back.innerHeight - back.bottom) <= 20,
       J(back),
     )
+
+    // 2d-1a：桌面端条件渲染不产生不可见 DOM（isNarrow 闸门，而非纯 CSS 隐藏）
+    const desktopToolbar = await ev(
+      cdp,
+      `(function(){
+        var bar = document.querySelector('[data-mobile-toolbar]');
+        return {
+          exists: bar !== null,
+          visible: bar !== null && bar.getClientRects().length > 0
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BN.l 恢复桌面视口后不渲染底部工具栏',
+      desktopToolbar.exists === false || desktopToolbar.visible === false,
+      J(desktopToolbar),
+    )
+  }
+}
+
+// BO. 日志头部：全选 / 计数 / 撤销 + Ctrl+Z 接线（2d-1b）
+async function testBO(cdp, checks) {
+  // 造两条可撤销记录（remove-line）作为被测目标；appendBlankLine 本身不写日志
+  const ids = await ev(
+    cdp,
+    `(function(){
+      var s = __lrc.store.getState();
+      var a = s.appendBlankLine('BO-A');
+      s = __lrc.store.getState();
+      var b = s.appendBlankLine('BO-B');
+      s = __lrc.store.getState();
+      s.removeLine(a);
+      __lrc.store.getState().removeLine(b);
+      return { logLen: __lrc.logLen() };
+    })()`,
+  )
+  await sleep(150)
+
+  // 桌面 1280 默认展开日志面板；只有未展开时才点入口，避免把已开的面板点成收起
+  const ensureLogHeader = async () => {
+    const has = await ev(cdp, `document.querySelector('[data-log-header]') !== null`)
+    if (has) return
+    await ev(
+      cdp,
+      `(function(){
+        var btn = document.querySelector('[title="工作日志"]');
+        if (btn !== null) btn.click();
+        return btn !== null;
+      })()`,
+    )
+    await sleep(200)
+  }
+  await ensureLogHeader()
+
+  const header = await ev(
+    cdp,
+    `(function(){
+      var h = document.querySelector('[data-log-header]');
+      return {
+        exists: h !== null,
+        hasSelectAll: !!(h && h.querySelector('[data-select-all]')),
+        hasUndoLast: !!(h && h.querySelector('[data-undo-last]'))
+      };
+    })()`,
+  )
+  assert(
+    checks,
+    'BO.a 日志头部存在且含全选框',
+    header.exists === true && header.hasSelectAll === true,
+    J({ header, setup: ids }),
+  )
+
+  // 点全选 → 计数 = 列表里带 checkbox 的行数（细行没有勾选框，自然不计入）
+  const selectAllOnce = async () =>
+    ev(
+      cdp,
+      `(function(){
+        var h = document.querySelector('[data-log-header]');
+        var cb = h ? h.querySelector('[data-select-all]') : null;
+        if (cb !== null) cb.click();
+        var rows = document.querySelectorAll('li[data-entry-id] input[type="checkbox"]');
+        var count = h ? h.querySelector('[data-selection-count]') : null;
+        return {
+          rows: rows.length,
+          n: count ? Number((count.textContent || '').replace(/[^0-9]/g, '')) : null,
+          hasUndoSelected: !!(h && h.querySelector('[data-undo-selected]')),
+          hasUndoLast: !!(h && h.querySelector('[data-undo-last]'))
+        };
+      })()`,
+    )
+  const all1 = await selectAllOnce()
+  await sleep(80)
+  assert(
+    checks,
+    'BO.b 全选后计数等于带 checkbox 的行数且「撤销所选」可用',
+    all1.rows > 0 && all1.n === all1.rows && all1.hasUndoSelected === true,
+    J(all1),
+  )
+
+  const all2 = await selectAllOnce()
+  await sleep(80)
+  assert(
+    checks,
+    'BO.c 再点全选取消：计数消失、「撤销」回归',
+    all2.n === null && all2.hasUndoLast === true,
+    J(all2),
+  )
+
+  const one = await ev(
+    cdp,
+    `(function(){
+      var row = document.querySelector('li[data-entry-id] input[type="checkbox"]');
+      if (row !== null) row.click();
+      var sel = document.querySelector('[data-select-all]');
+      var h = document.querySelector('[data-log-header]');
+      return {
+        rows: document.querySelectorAll('li[data-entry-id] input[type="checkbox"]').length,
+        aria: sel ? sel.getAttribute('aria-checked') : null,
+        hasCount: !!(h && h.querySelector('[data-selection-count]'))
+      };
+    })()`,
+  )
+  await sleep(80)
+  assert(
+    checks,
+    'BO.d 只勾一行 → 全选框呈半选（aria-checked=mixed）',
+    one.rows >= 2 && one.aria === 'mixed' && one.hasCount === true,
+    J(one),
+  )
+
+  // 焦点留在全选框上派发 Ctrl+Z：checkbox 豁免生效，日志最后一条被撤销
+  const beforeUndo = await ev(cdp, `__lrc.logLen()`)
+  await ev(
+    cdp,
+    `(function(){
+      var h = document.querySelector('[data-log-header]');
+      var cb = h ? h.querySelector('[data-select-all]') : null;
+      if (cb === null) return false;
+      cb.focus();
+      cb.click();
+      return document.activeElement === cb;
+    })()`,
+  )
+  await sleep(60)
+  await keyPress(cdp, 'KeyZ', 'z', 90, 2)
+  await sleep(150)
+  const afterKeyUndo = await ev(
+    cdp,
+    `(function(){
+      var es = __lrc.state().log.entries;
+      var last = es.length ? es[es.length - 1] : null;
+      return {
+        len: es.length,
+        status: last ? last.status : null,
+        activeTag: document.activeElement ? document.activeElement.tagName : 'none'
+      };
+    })()`,
+  )
+  assert(
+    checks,
+    'BO.e 焦点在全选框上时 Ctrl+Z 撤销最后一条',
+    afterKeyUndo.len === beforeUndo && afterKeyUndo.status === 'undone',
+    J({ beforeUndo, afterKeyUndo }),
+  )
+
+  // 焦点在行编辑文本框内：Ctrl+Z 不碰日志（原生撤销保留）
+  const beforeTyping = await ev(
+    cdp,
+    `(function(){ var es = __lrc.state().log.entries; var last = es.length ? es[es.length - 1] : null;
+      return { len: es.length, status: last ? last.status : null }; })()`,
+  )
+  await openLineSheet(cdp, 0)
+  const focused = await ev(
+    cdp,
+    `(function(){
+      var el = document.querySelector('[data-primary-text]');
+      if (el === null) return { focused: false, tag: 'none' };
+      el.focus();
+      return { focused: document.activeElement === el, tag: document.activeElement ? document.activeElement.tagName : 'none' };
+    })()`,
+  )
+  await keyPress(cdp, 'KeyZ', 'z', 90, 2)
+  await sleep(120)
+  const afterTyping = await ev(
+    cdp,
+    `(function(){ var es = __lrc.state().log.entries; var last = es.length ? es[es.length - 1] : null;
+      return { len: es.length, status: last ? last.status : null }; })()`,
+  )
+  assert(
+    checks,
+    'BO.f 行编辑输入框内 Ctrl+Z 不改日志（原生撤销保留）',
+    focused.focused === true &&
+      afterTyping.len === beforeTyping.len &&
+      afterTyping.status === beforeTyping.status,
+    J({ focused, beforeTyping, afterTyping }),
+  )
+  await ev(cdp, '__lrc.closeDialog()')
+  await sleep(120)
+
+  // 清空所有可撤销目标（演示文档自带若干日志，需全部撤销）→ 点「撤销」应给出 toast
+  await ev(
+    cdp,
+    `(function(){
+      var n = 0;
+      while (n < 200) {
+        var s = __lrc.store.getState();
+        if (!s.undoLastAction()) break;
+        n++;
+      }
+      return n;
+    })()`,
+  )
+  await sleep(100)
+  const noTarget = await ev(
+    cdp,
+    `(function(){
+      var h = document.querySelector('[data-log-header]');
+      var btn = h ? h.querySelector('[data-undo-last]') : null;
+      if (btn === null) return { clicked: false, text: null };
+      btn.click();
+      return { clicked: true, text: null };
+    })()`,
+  )
+  await sleep(150)
+  const noTargetToast = await ev(
+    cdp,
+    `(function(){ var el = document.querySelector('[role="status"]');
+      return { text: el ? (el.textContent || '').trim() : null }; })()`,
+  )
+  assert(
+    checks,
+    'BO.g 无可撤销目标时点「撤销」弹出提示',
+    noTarget.clicked === true &&
+      noTargetToast.text !== null &&
+      noTargetToast.text.indexOf('没有可撤销的记录') >= 0,
+    J({ noTarget, noTargetToast }),
+  )
+
+  // 勾选一条（已撤销记录）后点「撤销所选」→ 计数消失、「撤销」回归
+  // 筛选已折叠进弹层：先打开弹层把已撤销记录切到「正常」显示（细行没有勾选框），
+  // 再点遮罩关闭，避免遮罩挡住列表的勾选操作。
+  await ev(
+    cdp,
+    `(function(){
+      var btn = document.querySelector('[data-log-filter-toggle]');
+      if (btn !== null) btn.click();
+      return btn !== null;
+    })()`,
+  )
+  await sleep(150)
+  await ev(
+    cdp,
+    `(function(){
+      var btn = document.querySelector('[data-filter-archived="normal"]');
+      if (btn !== null) btn.click();
+      return btn !== null;
+    })()`,
+  )
+  await sleep(150)
+  await ev(
+    cdp,
+    `(function(){
+      var mask = document.querySelector('[aria-label="关闭筛选"]');
+      if (mask !== null) mask.click();
+      return mask !== null;
+    })()`,
+  )
+  await sleep(150)
+  const undoSelected = await ev(
+    cdp,
+    `(function(){
+      var row = document.querySelector('li[data-entry-id] input[type="checkbox"]');
+      if (row !== null) row.click();
+      var h = document.querySelector('[data-log-header]');
+      var undoBtn = h ? h.querySelector('[data-undo-selected]') : null;
+      if (undoBtn !== null) undoBtn.click();
+      return {
+        rows: document.querySelectorAll('li[data-entry-id] input[type="checkbox"]').length,
+        clicked: undoBtn !== null
+      };
+    })()`,
+  )
+  await sleep(150)
+  const afterUndoSelected = await ev(
+    cdp,
+    `(function(){
+      var h = document.querySelector('[data-log-header]');
+      return {
+        hasCount: !!(h && h.querySelector('[data-selection-count]')),
+        hasUndoLast: !!(h && h.querySelector('[data-undo-last]'))
+      };
+    })()`,
+  )
+  assert(
+    checks,
+    'BO.h 勾选后点「撤销所选」：计数消失、「撤销」回归',
+    undoSelected.clicked === true && undoSelected.rows > 0 &&
+      afterUndoSelected.hasCount === false && afterUndoSelected.hasUndoLast === true,
+    J({ undoSelected, afterUndoSelected }),
+  )
+}
+
+// BP. 日志筛选折叠弹层 + 顶栏冗余入口清理（2d-1c）
+async function testBP(cdp, checks) {
+  // 桌面 1280 默认展开日志面板；只有未展开时才点入口，避免把已开的面板点成收起
+  const ensureLogHeader = async () => {
+    const has = await ev(cdp, `document.querySelector('[data-log-header]') !== null`)
+    if (has) return
+    await ev(
+      cdp,
+      `(function(){
+        var btn = document.querySelector('[title="工作日志"]');
+        if (btn !== null) btn.click();
+        return btn !== null;
+      })()`,
+    )
+    await sleep(200)
+  }
+  const readFilterState = async () =>
+    ev(
+      cdp,
+      `(function(){
+        var btn = document.querySelector('[data-log-filter-toggle]');
+        return {
+          dot: !!document.querySelector('[data-filter-dot]'),
+          accent: btn !== null && (btn.className || '').indexOf('text-accent') >= 0
+        };
+      })()`,
+    )
+  const openPopover = async () => {
+    await ev(
+      cdp,
+      `(function(){
+        var btn = document.querySelector('[data-log-filter-toggle]');
+        if (btn !== null) btn.click();
+        return btn !== null;
+      })()`,
+    )
+    await sleep(150)
+  }
+  const closePopover = async () => {
+    await ev(
+      cdp,
+      `(function(){
+        var mask = document.querySelector('[aria-label="关闭筛选"]');
+        if (mask !== null) mask.click();
+        return mask !== null;
+      })()`,
+    )
+    await sleep(150)
+  }
+  const clickLogTab = async (label) => {
+    const result = await ev(
+      cdp,
+      `(function(){
+        var h = document.querySelector('[data-log-header]');
+        var root = h ? h.parentElement : null;
+        var nav = root ? root.querySelector('nav') : null;
+        var bs = nav ? nav.querySelectorAll('button') : [];
+        for (var i = 0; i < bs.length; i++) {
+          if ((bs[i].textContent || '').trim() === ${JSON.stringify(label)}) { bs[i].click(); return { clicked: true }; }
+        }
+        return { clicked: false, count: bs.length };
+      })()`,
+    )
+    await sleep(150)
+    return result
+  }
+
+  await ensureLogHeader()
+
+  // BP.a 顶栏两个冗余入口已删除，右侧容器只保留三个纯图标
+  const topbar = await ev(
+    cdp,
+    `(function(){
+      var right = document.querySelector('header [data-topbar-right]');
+      var nodes = document.querySelectorAll('header button, header label, header span');
+      var texts = [];
+      for (var i = 0; i < nodes.length; i++) texts.push((nodes[i].textContent || '').trim());
+      return {
+        rightExists: right !== null,
+        rightIcons: right === null ? -1 :
+          right.querySelectorAll('[data-topbar-import], [data-topbar-export], [data-topbar-settings]').length,
+        hasGradeLabel: texts.indexOf('分级回退') >= 0,
+        hasUndoKind: texts.indexOf('撤销该类型全部记录') >= 0,
+        hasSelect: document.querySelector('header select') !== null
+      };
+    })()`,
+  )
+  assert(
+    checks,
+    'BP.a 顶栏「分级回退 / 撤销该类型全部记录」已移除且右侧只剩三个图标',
+    topbar.rightExists === true &&
+      topbar.rightIcons === 3 &&
+      topbar.hasGradeLabel === false &&
+      topbar.hasUndoKind === false &&
+      topbar.hasSelect === false,
+    J(topbar),
+  )
+
+  // BP.b 默认不渲染弹层，旧的平铺 chip 不在 DOM
+  const closed = await ev(
+    cdp,
+    `(function(){
+      var btns = document.querySelectorAll('button');
+      var flatStatus = false;
+      for (var i = 0; i < btns.length; i++) {
+        if ((btns[i].textContent || '').trim() === '只看生效') { flatStatus = true; break; }
+      }
+      return {
+        toggle: document.querySelector('[data-log-filter-toggle]') !== null,
+        popover: document.querySelector('[data-log-filter-popover]') !== null,
+        flatStatus: flatStatus
+      };
+    })()`,
+  )
+  assert(
+    checks,
+    'BP.b 默认不渲染筛选弹层，三组平铺 chip 已消失',
+    closed.toggle === true && closed.popover === false && closed.flatStatus === false,
+    J(closed),
+  )
+
+  // BP.c 「总」页签打开弹层 → 状态 / 已撤销 / 类型三段齐全
+  await openPopover()
+  const opened = await ev(
+    cdp,
+    `(function(){
+      var p = document.querySelector('[data-log-filter-popover]');
+      return {
+        popover: p !== null,
+        status: !!(p && p.querySelector('[data-filter-section="status"]')),
+        archived: !!(p && p.querySelector('[data-filter-section="archived"]')),
+        kind: !!(p && p.querySelector('[data-filter-section="kind"]'))
+      };
+    })()`,
+  )
+  assert(
+    checks,
+    'BP.c 「总」页签弹层含状态 / 已撤销 / 类型三段',
+    opened.popover === true && opened.status === true && opened.archived === true && opened.kind === true,
+    J(opened),
+  )
+
+  // BP.d 选「只看已撤销」→ 按钮 accent + 圆点
+  await ev(
+    cdp,
+    `(function(){
+      var btn = document.querySelector('[data-filter-status="undone"]');
+      if (btn !== null) btn.click();
+      return btn !== null;
+    })()`,
+  )
+  await sleep(150)
+  await closePopover()
+  const dotted = await readFilterState()
+  assert(
+    checks,
+    'BP.d 非默认筛选时按钮变 accent 并显示圆点',
+    dotted.dot === true && dotted.accent === true,
+    J(dotted),
+  )
+  // 恢复默认筛选（全部）
+  await openPopover()
+  await ev(
+    cdp,
+    `(function(){
+      var btn = document.querySelector('[data-filter-status="all"]');
+      if (btn !== null) btn.click();
+      return btn !== null;
+    })()`,
+  )
+  await sleep(150)
+  await closePopover()
+
+  // BP.e 切到「修改」页签再开弹层：不暴露状态 / 已撤销段，只留类型
+  const switched = await clickLogTab('修改')
+  await openPopover()
+  const editsFilter = await ev(
+    cdp,
+    `(function(){
+      var p = document.querySelector('[data-log-filter-popover]');
+      return {
+        popover: p !== null,
+        statusChip: p ? p.querySelectorAll('[data-filter-status]').length : -1,
+        statusSection: !!(p && p.querySelector('[data-filter-section="status"]')),
+        archivedSection: !!(p && p.querySelector('[data-filter-section="archived"]')),
+        kindSection: !!(p && p.querySelector('[data-filter-section="kind"]'))
+      };
+    })()`,
+  )
+  assert(
+    checks,
+    'BP.e 非「总」页签弹层只保留类型段',
+    switched.clicked === true &&
+      editsFilter.popover === true &&
+      editsFilter.statusChip === 0 &&
+      editsFilter.statusSection === false &&
+      editsFilter.archivedSection === false &&
+      editsFilter.kindSection === true,
+    J({ switched, editsFilter }),
+  )
+
+  // BP.f 「修改」页签下仅类型筛选为非默认 → 圆点亮；恢复全部 → 圆点灭
+  await ev(
+    cdp,
+    `(function(){
+      var btn = document.querySelector('[data-filter-kind]');
+      if (btn !== null) btn.click();
+      return btn !== null;
+    })()`,
+  )
+  await sleep(150)
+  await closePopover()
+  const kindDotted = await readFilterState()
+  await openPopover()
+  await ev(
+    cdp,
+    `(function(){
+      var btn = document.querySelector('[data-filter-kind-all]');
+      if (btn !== null) btn.click();
+      return btn !== null;
+    })()`,
+  )
+  await sleep(150)
+  await closePopover()
+  const kindCleared = await readFilterState()
+  assert(
+    checks,
+    'BP.f 非「总」页签仅类型筛选时圆点亮，恢复全部后圆点灭',
+    kindDotted.dot === true &&
+      kindDotted.accent === true &&
+      kindCleared.dot === false &&
+      kindCleared.accent === false,
+    J({ kindDotted, kindCleared }),
+  )
+
+  // 复位：回到「总」页签
+  await clickLogTab('总')
+}
+
+/**
+ * BQ：波形区音频空状态蒙版。
+ *
+ * 只断两件事：无音频时蒙版是唯一入口（且顶栏不再重复「未加载音频」文字）；
+ * 走真实导入后蒙版必须消失。音频状态从顶栏收敛到波形区是本轮的产品决定。
+ */
+async function testBQ(cdp, checks) {
+  const empty = await ev(
+    cdp,
+    `(function(){
+      var mask = document.querySelector('[data-wave-empty]');
+      var btn = mask === null ? null : mask.querySelector('[data-wave-import]');
+      var header = document.querySelector('header');
+      return {
+        mask: mask !== null,
+        btn: btn !== null,
+        text: btn === null ? '' : (btn.textContent || '').trim(),
+        headerText: header === null ? '' : (header.textContent || '')
+      };
+    })()`,
+  )
+  assert(
+    checks,
+    'BQ.a 无音频时波形区蒙版含「未加载音频 · 点击导入」，顶栏不再出现该文字',
+    empty.mask === true &&
+      empty.btn === true &&
+      empty.text.indexOf('未加载音频') >= 0 &&
+      empty.headerText.indexOf('未加载音频') < 0,
+    J({ mask: empty.mask, btn: empty.btn, text: empty.text, headerText: empty.headerText }),
+  )
+
+  // BQ.b 走顶栏图标导入真实 WAV → 蒙版必须从 DOM 消失
+  await setupAudio(cdp)
+  const stillThere = await ev(cdp, `document.querySelector('[data-wave-empty]') !== null`)
+  assert(checks, 'BQ.b 导入音频后波形区蒙版从 DOM 消失', stillThere === false, J({ stillThere }))
+}
+
+/**
+ * BR：全局拖拽导入。
+ *
+ * 四条只断拖拽链路本身：蒙版随 `dragenter` 挂载、`dragleave`（拖出窗口）后卸载、
+ * 真实 `.lrc` 落地后歌词列表被替换、不支持的扩展名给 toast。
+ *
+ * 全部用页面内注入 `DragEvent` 模拟，不依赖真实文件系统拖拽（CDP 也做不到）。
+ * 注意 React 18 的 `setState` 是异步的，注入后必须留一帧再读 DOM，
+ * 同帧读到的必然是旧值（任务书里的同步探针会误判为 false）。
+ */
+async function testBR(cdp, checks) {
+  // BR.a 冒烟：dragenter 后蒙版出现
+  const enter = await ev(
+    cdp,
+    `(async function(){
+      try {
+        var dt = new DataTransfer();
+        dt.items.add(new File(['a'], 'a.lrc'));
+        document.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }));
+        // 等 setState 提交并完成一帧渲染
+        await new Promise(function (r) { setTimeout(r, 80); });
+        return { ok: true, hasMask: document.querySelector('[data-drop-mask]') !== null };
+      } catch (e) {
+        return { ok: false, err: String(e) };
+      }
+    })()`,
+  )
+  assert(
+    checks,
+    'BR.a dragenter 后出现全屏拖拽蒙版',
+    enter.ok === true && enter.hasMask === true,
+    J(enter),
+  )
+
+  // BR.b 拖出窗口（relatedTarget 为 null）→ 蒙版卸载
+  // 自带一次 dragenter，不依赖 BR.a 残留的计数器，单条可独跑
+  const leave = await ev(
+    cdp,
+    `(async function(){
+      try {
+        var dt = new DataTransfer();
+        dt.items.add(new File(['a'], 'a.lrc'));
+        document.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }));
+        await new Promise(function (r) { setTimeout(r, 80); });
+        var shown = document.querySelector('[data-drop-mask]') !== null;
+        document.dispatchEvent(new DragEvent('dragleave', { relatedTarget: null, bubbles: true }));
+        await new Promise(function (r) { setTimeout(r, 80); });
+        return { shown: shown, hasMask: document.querySelector('[data-drop-mask]') !== null };
+      } catch (e) {
+        return { ok: false, err: String(e) };
+      }
+    })()`,
+  )
+  assert(
+    checks,
+    'BR.b 拖出窗口（relatedTarget 为 null）后蒙版从 DOM 消失',
+    leave.shown === true && leave.hasMask === false,
+    J(leave),
+  )
+
+  // BR.c 真实 .lrc drop → 歌词列表被替换（默认 demo 5 行 → 2 行），蒙版同时消失
+  const before = await ev(cdp, `document.querySelectorAll('[data-lyric-block]').length`)
+  const drop = await ev(
+    cdp,
+    `(async function(){
+      try {
+        var dt = new DataTransfer();
+        dt.items.add(new File(['[00:01.00]第一行\\n[00:02.00]第二行'], 'drop.lrc', { type: 'text/plain' }));
+        document.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true }));
+        // 解码 → 解析 → 导入是异步链路：轮询等行数变化，不拿固定时长赌时序
+        var deadline = Date.now() + 2000;
+        while (Date.now() < deadline) {
+          await new Promise(function (r) { setTimeout(r, 50); });
+          if (document.querySelectorAll('[data-lyric-block]').length !== ${before}) break;
+        }
+        var blocks = document.querySelectorAll('[data-lyric-block]');
+        var texts = [];
+        for (var i = 0; i < blocks.length; i++) texts.push((blocks[i].textContent || '').trim());
+        return {
+          rows: blocks.length,
+          hasFirst: texts.join('|').indexOf('第一行') >= 0,
+          hasMask: document.querySelector('[data-drop-mask]') !== null
+        };
+      } catch (e) {
+        return { ok: false, err: String(e) };
+      }
+    })()`,
+  )
+  assert(
+    checks,
+    'BR.c 拖入 .lrc 后歌词列表被替换（行数变化且含「第一行」），蒙版消失',
+    drop.rows !== before && drop.hasFirst === true && drop.hasMask === false,
+    J({ before, ...drop }),
+  )
+
+  // BR.d 不支持的扩展名 → toast 拦截，不触碰文档
+  const bad = await ev(
+    cdp,
+    `(async function(){
+      try {
+        var dt = new DataTransfer();
+        dt.items.add(new File([new Uint8Array([137, 80, 78, 71])], 'a.png', { type: 'image/png' }));
+        document.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true }));
+        await new Promise(function (r) { setTimeout(r, 120); });
+        var t = document.querySelector('[role="status"]');
+        return {
+          text: t === null ? '' : (t.textContent || ''),
+          rows: document.querySelectorAll('[data-lyric-block]').length
+        };
+      } catch (e) {
+        return { ok: false, err: String(e) };
+      }
+    })()`,
+  )
+  assert(
+    checks,
+    'BR.d 拖入 .png 被拦截并提示「不支持的文件格式」，文档行数不变',
+    bad.text.indexOf('不支持的文件格式') >= 0 && bad.rows === drop.rows,
+    J({ importedRows: drop.rows, ...bad }),
+  )
+}
+
+/**
+ * BS：移动端底部抽屉（`BottomSheet` 多档吸附 + 去遮罩）。
+ *
+ * 三条断言：打开后无遮罩且出现「收起」按钮；从全展开拖到底部松手即关闭；
+ * 未到关闭阈值时松手吸附到三档之一（用面板 `rect.top` 与页面内现算档位比对）。
+ * 拖拽必须走 CDP 真实鼠标事件（见 `dragSheetDown`），合成事件无法驱动 `setPointerCapture`。
+ */
+async function testBS(cdp, checks) {
+  const NARROW = { width: 375, height: 667, deviceScaleFactor: 1, mobile: true }
+  const DESKTOP = { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }
+
+  try {
+    await cdp.send('Emulation.setDeviceMetricsOverride', NARROW)
+    // 等 matchMedia change → React 重渲染出底部工具栏
+    await sleep(250)
+
+    const opened = await ev(
+      cdp,
+      `(function(){
+        var btn = document.querySelector('[data-mobile-toolbar] button[title="日志"]');
+        if (btn === null) return { clicked: false };
+        btn.click();
+        return { clicked: true };
+      })()`,
+    )
+    await sleep(150)
+    const shown = await ev(
+      cdp,
+      `(function(){
+        return {
+          panel: document.querySelector('[data-sheet-panel]') !== null,
+          backdrop: document.querySelector('[data-sheet-backdrop]') !== null,
+          handle: document.querySelector('[data-sheet-handle]') !== null,
+          collapse: document.querySelector('[data-sheet-collapse]') !== null
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BS.a 点「日志」打开抽屉：面板 / 把手 / 收起按钮出现，无遮罩',
+      opened.clicked === true &&
+        shown.panel === true &&
+        shown.backdrop === false &&
+        shown.handle === true &&
+        shown.collapse === true,
+      J({ opened, shown }),
+    )
+
+    // 从全展开状态拖 500px（可见高度 < 10vh）：松手直接关闭
+    const closed = await dragSheetDown(cdp, 500)
+    const gone = await ev(
+      cdp,
+      `(function(){
+        return {
+          panel: document.querySelector('[data-sheet-panel]') !== null,
+          backdrop: document.querySelector('[data-sheet-backdrop]') !== null,
+          handle: document.querySelector('[data-sheet-handle]') !== null
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BS.b 拖到底部关闭抽屉：面板 / 把手从 DOM 移除',
+      closed.dragged === true && gone.panel === false && gone.backdrop === false && gone.handle === false,
+      J({ closed, gone }),
+    )
+
+    // 重新打开，验证「未到关闭阈值 → 吸附到三档之一」而不是回弹到 0
+    await ev(
+      cdp,
+      `(function(){
+        var btn = document.querySelector('[data-mobile-toolbar] button[title="日志"]');
+        if (btn === null) return { clicked: false };
+        btn.click();
+        return { clicked: true };
+      })()`,
+    )
+    await sleep(150)
+    const snappedDrag = await dragSheetDown(cdp, 300)
+    const snapped = await ev(
+      cdp,
+      `(function(){
+        var panel = document.querySelector('[data-sheet-panel]');
+        if (panel === null) return { panel: false };
+        var card = document.querySelector('[data-timeline-strip]');
+        var rect = panel.getBoundingClientRect();
+        var vh = window.innerHeight;
+        // 面板高度固定 80vh，故未位移时的基准顶 = 屏高 - 面板高
+        var baseTop = vh - rect.height;
+        var cardBottom = card === null ? null : card.getBoundingClientRect().bottom;
+        var midTop = cardBottom === null ? vh * 0.45 : cardBottom;
+        var expectedTop = [
+          baseTop,
+          Math.max(baseTop, midTop),
+          vh * 0.7
+        ];
+        var minDelta = Infinity;
+        for (var i = 0; i < expectedTop.length; i++) {
+          var d = Math.abs(expectedTop[i] - rect.top);
+          if (d < minDelta) minDelta = d;
+        }
+        return {
+          panel: true,
+          top: Math.round(rect.top * 100) / 100,
+          baseTop: Math.round(baseTop * 100) / 100,
+          cardBottom: cardBottom === null ? null : Math.round(cardBottom * 100) / 100,
+          expectedTop: expectedTop,
+          minDelta: Math.round(minDelta * 100) / 100
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BS.c 拖 300px 未到关闭阈值：面板仍在并吸附到三档之一（±6px）',
+      snappedDrag.dragged === true && snapped.panel === true && snapped.minDelta <= 6,
+      J({ snappedDrag, snapped }),
+    )
+
+    // 用「收起 ▾」按钮清理，避免残留面板干扰后续组
+    await ev(
+      cdp,
+      `(function(){
+        var el = document.querySelector('[data-sheet-collapse]');
+        if (el !== null) el.click();
+        return null;
+      })()`,
+    )
+    await sleep(200)
+  } finally {
+    // 必须还原桌面视口，否则后续组全部跑在手机视口里
+    await cdp.send('Emulation.setDeviceMetricsOverride', DESKTOP)
+    await sleep(100)
+  }
+}
+
+/**
+ * 移动端操作面板：按钮集合 / 速率档位切换 / 拖到底关闭。
+ *
+ * 只断结构与文案：播放、打轴的真实副作用由其它组覆盖；
+ * 长按连发本轮未实现，故不做断言。
+ */
+async function testBT(cdp, checks) {
+  const NARROW = { width: 375, height: 667, deviceScaleFactor: 1, mobile: true }
+  const DESKTOP = { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }
+
+  const clickIn = async (selector) =>
+    ev(
+      cdp,
+      `(function(){
+        var el = document.querySelector(${JSON.stringify(selector)});
+        if (el === null) return { clicked: false };
+        el.click();
+        return { clicked: true };
+      })()`,
+    )
+
+  try {
+    await cdp.send('Emulation.setDeviceMetricsOverride', NARROW)
+    // 等 matchMedia change → React 重渲染出底部工具栏
+    await sleep(250)
+
+    const opened = await clickIn('[data-mobile-toolbar] button[title="操作"]')
+    await sleep(150)
+    const parts = await ev(
+      cdp,
+      `(function(){
+        var panel = document.querySelector('[data-operation-panel]');
+        if (panel === null) return { panel: false };
+        var has = function(action){ return panel.querySelector('[data-op-action="' + action + '"]') !== null; };
+        return {
+          panel: true,
+          actions: panel.querySelectorAll('[data-op-action]').length,
+          left: has('left'),
+          right: has('right'),
+          up: has('up'),
+          down: has('down'),
+          play: has('play'),
+          stamp: has('stamp'),
+          zoomIn: has('zoom-in'),
+          zoomOut: has('zoom-out'),
+          volume: panel.querySelector('[data-op-volume]') !== null
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BT.a 点「操作」打开面板：4 方向键 / 播放 / 打轴 / 缩放 / 音量齐全',
+      opened.clicked === true &&
+        parts.panel === true &&
+        parts.actions === 9 &&
+        parts.left === true &&
+        parts.right === true &&
+        parts.up === true &&
+        parts.down === true &&
+        parts.play === true &&
+        parts.stamp === true &&
+        parts.zoomIn === true &&
+        parts.zoomOut === true &&
+        parts.volume === true,
+      J({ opened, parts }),
+    )
+
+    // 速率：展开 6 档 → 点 1.5x → 按钮文案变「1.5x」且菜单收起
+    const rateOpen = await clickIn('[data-op-action="rate"]')
+    await sleep(150)
+    const rateMenu = await ev(
+      cdp,
+      `(function(){
+        var menu = document.querySelector('[data-op-rate-menu]');
+        return {
+          open: menu !== null,
+          chips: menu === null ? 0 : menu.querySelectorAll('[data-op-rate]').length
+        };
+      })()`,
+    )
+    const ratePick = await clickIn('[data-op-rate="1.5"]')
+    await sleep(150)
+    const rateAfter = await ev(
+      cdp,
+      `(function(){
+        var btn = document.querySelector('[data-op-action="rate"]');
+        return {
+          text: btn === null ? null : btn.textContent.trim(),
+          menu: document.querySelector('[data-op-rate-menu]') !== null,
+          rate: __lrc.store.getState().playback.rate
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BT.b 速率按钮展开 6 档；点 1.5x 后文案变「1.5x」并收起',
+      rateOpen.clicked === true &&
+        rateMenu.open === true &&
+        rateMenu.chips === 6 &&
+        ratePick.clicked === true &&
+        rateAfter.text === '1.5x' &&
+        rateAfter.menu === false &&
+        rateAfter.rate === 1.5,
+      J({ rateOpen, rateMenu, ratePick, rateAfter }),
+    )
+    // 还原默认速率，避免污染后续用例
+    await ev(cdp, '__lrc.store.getState().setRate(1)')
+
+    const closed = await dragSheetDown(cdp, 500)
+    const gone = await ev(
+      cdp,
+      `(function(){
+        return {
+          panel: document.querySelector('[data-sheet-panel]') !== null,
+          backdrop: document.querySelector('[data-sheet-backdrop]') !== null,
+          opPanel: document.querySelector('[data-operation-panel]') !== null
+        };
+      })()`,
+    )
+    assert(
+      checks,
+      'BT.c 拖到底部关闭：面板节点从 DOM 移除',
+      closed.dragged === true && gone.panel === false && gone.backdrop === false && gone.opPanel === false,
+      J({ closed, gone }),
+    )
+  } finally {
+    // 必须还原桌面视口，否则后续组全部跑在手机视口里
+    await cdp.send('Emulation.setDeviceMetricsOverride', DESKTOP)
+    await sleep(100)
+  }
+}
+
+/**
+ * 移动端高度分割线：窄屏存在 / 初始 58% / 拖拽实时改高度 / 双向 20% 夹紧 / 桌面不渲染。
+ *
+ * 视口与 BS / BT 一致（375x667）。所有高度都换算成主内容列（`section`）高度的
+ * 比例断言——分割线只在本列内部重新分配高度，用屏幕高度算会引入 header /
+ * 工具栏高度差。
+ */
+async function testBU(cdp, checks) {
+  const NARROW = { width: 375, height: 667, deviceScaleFactor: 1, mobile: true }
+  const DESKTOP = { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }
+
+  /** 读一次几何：上区 / 主内容列 / 歌词面板高度，以及分割线是否存在。 */
+  const readGeom = () =>
+    ev(
+      cdp,
+      `(function(){
+        var top = document.querySelector('[data-column-top]');
+        var splitter = document.querySelector('[data-column-splitter]');
+        var section = top === null ? null : top.parentElement;
+        var h2s = document.querySelectorAll('h2');
+        var panel = null;
+        for (var i = 0; i < h2s.length; i++) {
+          if ((h2s[i].textContent || '').trim() === '歌词块') {
+            // PanelFrame 根节点是 div，header 的父节点即面板根
+            panel = h2s[i].closest('header').parentElement;
+            break;
+          }
+        }
+        return {
+          hasTop: top !== null,
+          topH: top === null ? null : top.getBoundingClientRect().height,
+          sectionH: section === null ? null : section.clientHeight,
+          panelH: panel === null ? null : panel.getBoundingClientRect().height,
+          hasSplitter: splitter !== null,
+          splitterH: splitter === null ? 0 : splitter.getBoundingClientRect().height
+        };
+      })()`,
+    )
+
+  try {
+    await cdp.send('Emulation.setDeviceMetricsOverride', NARROW)
+    // 等 matchMedia change → React 换成窄屏结构（播放条入列 + 分割线）
+    await sleep(250)
+
+    const initial = await readGeom()
+    assert(
+      checks,
+      'BU.a 窄屏渲染高度分割线（节点存在且占位 > 0）',
+      initial.hasSplitter === true && initial.splitterH > 0,
+      J(initial),
+    )
+
+    const ratio0 = initial.topH / initial.sectionH
+    assert(
+      checks,
+      'BU.c 初始上区占比 ≈ 58%（±0.05）',
+      Math.abs(ratio0 - 0.58) <= 0.05,
+      J({ topH: initial.topH, sectionH: initial.sectionH, ratio: Math.round(ratio0 * 1000) / 1000 }),
+    )
+
+    // 向下拖 80px：上区高度应同步增加约 80px（说明拖动实时跟手，且松手不回弹）
+    const dragged = await dragSplitter(cdp, 80)
+    const afterDown = await readGeom()
+    const deltaDown = afterDown.topH - initial.topH
+    assert(
+      checks,
+      'BU.d 向下拖 80px：上区高度同步增加 ≈ 80px（±8）',
+      dragged.dragged === true && Math.abs(deltaDown - 80) <= 8,
+      J({ dragged, delta: Math.round(deltaDown * 100) / 100 }),
+    )
+
+    // 向上猛拖：单次目标点会被夹进视口，故连拖三次累积到边界
+    let up = null
+    for (let i = 0; i < 3; i += 1) up = await dragSplitter(cdp, -240)
+    const afterUp = await readGeom()
+    // 向下猛拖：同样连拖三次，验证下区仍保留 20%
+    for (let i = 0; i < 3; i += 1) await dragSplitter(cdp, 240)
+    const afterMax = await readGeom()
+    const minH = afterUp.sectionH * 0.2
+    const panelLimit = afterMax.sectionH * 0.2
+    assert(
+      checks,
+      'BU.e 双向猛拖：上区锁在 20%，歌词面板也保留 ≥ 20%（±8）',
+      up !== null &&
+        up.dragged === true &&
+        Math.abs(afterUp.topH - minH) <= 8 &&
+        afterMax.panelH >= panelLimit - 8,
+      J({
+        upTopH: Math.round(afterUp.topH * 100) / 100,
+        minH: Math.round(minH * 100) / 100,
+        panelH: Math.round(afterMax.panelH * 100) / 100,
+        panelLimit: Math.round(panelLimit * 100) / 100,
+      }),
+    )
+
+    const sideEffect = await ev(
+      cdp,
+      `(function(){
+        return { text: window.getSelection().toString(), scrollY: window.scrollY };
+      })()`,
+    )
+    assert(
+      checks,
+      'BU.f 拖拽未选中文字、未触发页面滚动',
+      sideEffect.text === '' && sideEffect.scrollY === 0,
+      J(sideEffect),
+    )
+
+    // 桌面端不该有这条线（否则白占 20px，还多一条抢手势的横线）
+    await cdp.send('Emulation.setDeviceMetricsOverride', DESKTOP)
+    await sleep(250)
+    const desktop = await readGeom()
+    assert(
+      checks,
+      'BU.b 桌面端不渲染高度分割线',
+      desktop.hasSplitter === false,
+      J(desktop),
+    )
+  } finally {
+    // 必须还原桌面视口，否则后续组全部跑在手机视口里
+    await cdp.send('Emulation.setDeviceMetricsOverride', DESKTOP)
+    await sleep(100)
   }
 }
 
@@ -4772,6 +6079,13 @@ const TESTS = [
   ['BL', '行首拖动接吸附：吸本行首字不推平 / 关吸附越过首字推平', testBL],
   ['BM', 'Word 导入接线：菜单项可点、隐藏 input 的 accept 含 .docx', testBM],
   ['BN', '窄屏结构：隐藏活动栏 / 播放条入主内容列 / 单实例 / 顶栏折叠回归锁 / 恢复桌面视口', testBN],
+  ['BO', '日志头部：全选 / 计数 / 撤销所选 / Ctrl+Z 接线与 checkbox 豁免', testBO],
+  ['BP', '日志筛选折叠弹层 / 顶栏冗余入口清理', testBP],
+  ['BQ', '波形空状态蒙版：无音频时可点击导入 / 导入后消失 / 顶栏不再提示', testBQ],
+  ['BR', '全局拖拽导入：蒙版显隐 / 真实 .lrc 导入 / 不支持格式 toast', testBR],
+  ['BS', '移动端底部抽屉：无遮罩 / 拖拽吸附 / 拖到底关闭', testBS],
+  ['BT', '移动端操作面板：按钮集合 / 速率档位 / 拖到底关闭', testBT],
+  ['BU', '移动端高度分割线：初始 58% / 拖拽跟手 / 双向 20% 夹紧 / 桌面不渲染', testBU],
 ]
 
 async function main() {

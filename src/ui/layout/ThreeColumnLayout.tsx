@@ -3,6 +3,7 @@ import { PlaybackBar } from '../components/PlaybackBar'
 import { useSettingsStore } from '../stores/settingsStore'
 import { ActivityBar } from './ActivityBar'
 import { LeftColumn } from './LeftColumn'
+import { MobileToolbar } from './MobileToolbar'
 import { RightSidebar } from './RightSidebar'
 
 /**
@@ -106,6 +107,9 @@ export function ThreeColumnLayout() {
           </>
         )}
       </div>
+
+      {/* 窄视口：底部常驻工具栏（流内子项，压缩主行高度而非悬浮覆盖） */}
+      {isNarrow && <MobileToolbar />}
 
       {/* 底部：播放控制，位于最外层 padding 之内；窄视口时改由 LeftColumn 内部渲染 */}
       {!isNarrow && (

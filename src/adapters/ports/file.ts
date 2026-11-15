@@ -104,6 +104,18 @@ export interface FilePort {
   readText(ref: FileRef): Promise<TextFileContent>
 
   /**
+   * 读取拖拽进来的文件（全局拖拽导入）。
+   *
+   * 与 {@link openTextFile} 走**完全相同**的解码与 `.docx` 解析逻辑，
+   * 区别只在于文件已由调用方持有，不弹文件选择器，因此不存在"用户取消"，
+   * 返回值不会是 `null`。
+   *
+   * @param file 拖拽得到的原生文件对象
+   * @returns 文本内容（引用已登记，可再交给 {@link readText} 重读）
+   */
+  readDroppedFile: (file: File) => Promise<TextFileContent>
+
+  /**
    * 保存文本文件。
    *
    * @param request 保存请求

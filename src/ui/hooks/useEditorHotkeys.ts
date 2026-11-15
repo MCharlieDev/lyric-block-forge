@@ -1,5 +1,7 @@
 import { useEffect } from 'react'
 import { useAdapters } from '../context/AdapterContext'
+import { useEditorStore } from '../stores/editorStore'
+import { showToast } from '../stores/toastStore'
 import {
   NUDGE_STEP_MS,
   clearSelectionKeepCursor,
@@ -45,6 +47,8 @@ export const DEFAULT_HOTKEYS = {
   toggleCursorSelection: 'Enter',
   /** 清空行选区、光标不动（`Esc`） */
   clearSelection: 'Escape',
+  /** 撤销日志中最近一条可撤销记录（`Ctrl/Cmd+Z`） */
+  undo: 'KeyZ',
 } as const
 
 /**
@@ -140,7 +144,15 @@ export function useEditorHotkeys(): void {
       if (event.repeat) return
       if (event.isComposing) return
       const active = document.activeElement
-      if (blocksHotkeys(active)) return
+      // Ctrl/Cmd+Z 在勾选框 / 单选框上要放行：点完「全选」后焦点会留在 checkbox 上，
+      // 若按文本输入语义一并拦掉，撤销就永远够不着。其余快捷键仍被拦
+      // （尤其 Space 是勾选框的原生切换键，绝不能抢）。
+      const isUndoKey =
+        (event.ctrlKey || event.metaKey) && event.code === DEFAULT_HOTKEYS.undo
+      const isCheckboxLike =
+        active instanceof HTMLInputElement &&
+        (active.type === 'checkbox' || active.type === 'radio')
+      if (blocksHotkeys(active) && !(isUndoKey && isCheckboxLike)) return
       if (hasOpenDialog()) return
 
       switch (event.code) {
@@ -208,6 +220,15 @@ export function useEditorHotkeys(): void {
         case DEFAULT_HOTKEYS.deleteSelectionAlt:
           event.preventDefault()
           removeSelectedLines()
+          return
+        // Ctrl/Cmd+Z：撤销日志最近一条。纯 Z 必须放行，否则会吃掉文本输入里的
+        // 原生撤销（焦点在文本框时已在上面 return，这里只兜住页面空白处按 Z）。
+        case DEFAULT_HOTKEYS.undo:
+          if (!(event.ctrlKey || event.metaKey)) return
+          event.preventDefault()
+          if (!useEditorStore.getState().undoLastAction()) {
+            showToast('没有可撤销的记录')
+          }
           return
         default:
           return

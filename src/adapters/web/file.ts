@@ -86,6 +86,25 @@ async function readDocxText(file: File): Promise<string> {
   return result.value
 }
 
+/**
+ * 把文本文件读成 `TextFileContent` 的内容部分。
+ *
+ * 三条入口共用同一套逻辑，避免行为分叉：
+ * - `openTextFile`：用户从选择器选中；
+ * - `readText`：按引用重读（最近文件 / 恢复副本）；
+ * - `readDroppedFile`：全局拖拽导入。
+ *
+ * `.docx` 是二进制容器，纯文本由 `mammoth` 产出，故 `encoding` 记为 `null`。
+ *
+ * @param file 文件对象
+ * @returns 文本与判定出的编码
+ */
+async function decodeTextFile(file: File): Promise<{ text: string; encoding: string | null }> {
+  return isDocxFile(file)
+    ? { text: await readDocxText(file), encoding: null }
+    : decodeBuffer(await file.arrayBuffer())
+}
+
 /** File System Access API 的最小可用结构（避免依赖具体 TS lib 版本）。 */
 interface WritableLike {
   write(data: Blob): Promise<void>
@@ -155,9 +174,7 @@ export function createWebFilePort(): FilePort {
     if (file === undefined) {
       throw new Error(`无法读取文件：引用 ${ref.uri} 不在本次会话的注册表中`)
     }
-    const decoded = isDocxFile(file)
-      ? { text: await readDocxText(file), encoding: null }
-      : decodeBuffer(await file.arrayBuffer())
+    const decoded = await decodeTextFile(file)
     return { ref, text: decoded.text, encoding: decoded.encoding }
   }
 
@@ -173,9 +190,7 @@ export function createWebFilePort(): FilePort {
         sizeBytes: file.size,
         mimeType: file.type === '' ? null : file.type,
       }
-      const decoded = isDocxFile(file)
-        ? { text: await readDocxText(file), encoding: null }
-        : decodeBuffer(await file.arrayBuffer())
+      const decoded = await decodeTextFile(file)
       return { ref, text: decoded.text, encoding: decoded.encoding }
     },
 
@@ -193,6 +208,17 @@ export function createWebFilePort(): FilePort {
     },
 
     readText,
+
+    async readDroppedFile(file: File): Promise<TextFileContent> {
+      const ref: FileRef = {
+        name: file.name,
+        uri: register(file),
+        sizeBytes: file.size,
+        mimeType: file.type === '' ? null : file.type,
+      }
+      const decoded = await decodeTextFile(file)
+      return { ref, text: decoded.text, encoding: decoded.encoding }
+    },
 
     async saveText(request: SaveTextRequest): Promise<FileRef | null> {
       const blob = new Blob([request.text], { type: 'text/plain;charset=utf-8' })
